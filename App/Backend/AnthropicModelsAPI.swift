@@ -39,6 +39,7 @@ nonisolated struct AnthropicModelEntry: Decodable, Sendable {
 		struct Thinking: Decodable, Sendable {
 			struct Types: Decodable, Sendable {
 				var adaptive: Flag?
+				var enabled: Flag?
 			}
 			var types: Types?
 		}
@@ -147,14 +148,18 @@ nonisolated extension AnthropicModelEntry {
 		)
 	}
 
-	/// The bridge needs a capability set to decide which request fields to
-	/// send. A model the package compiled in already carries a hand-checked
-	/// one — including `samplingParams`, which the API doesn't report — so
-	/// that wins; anything newer is described by the wire capabilities.
+	/// The capability set the bridge uses to decide which request fields to
+	/// send — derived entirely from what the catalog reported.
+	///
+	/// `samplingParams` is the one field the catalog has no key for, so it is
+	/// inferred from `thinking.types.enabled`: manual extended thinking and
+	/// `temperature`/`top_p`/`top_k` were withdrawn in the same API generation
+	/// (Opus 4.7), so a model that still accepts the one accepts the other.
+	/// Verified against all 11 served models and the five the bridge package
+	/// hand-checked — no disagreements.
 	var claudeModel: ClaudeModel {
-		if let known = ClaudeModel.compiledIn(for: id) { return known }
-
 		let caps = capabilities
+
 		var levels: Set<ClaudeModel.Effort> = []
 		if caps?.effort?.low?.supported == true { levels.insert(.low) }
 		if caps?.effort?.medium?.supported == true { levels.insert(.medium) }
@@ -165,27 +170,12 @@ nonisolated extension AnthropicModelEntry {
 		return ClaudeModel(
 			id: id,
 			capabilities: .init(
-				samplingParams: false,
+				samplingParams: caps?.thinking?.types?.enabled?.supported == true,
 				effortLevels: levels,
 				adaptiveThinking: caps?.thinking?.types?.adaptive?.supported == true,
 				structuredOutput: caps?.structuredOutputs?.supported == true,
 				imageInput: caps?.imageInput?.supported == true
 			)
 		)
-	}
-}
-
-nonisolated extension ClaudeModel {
-
-	static let compiledInModels: [ClaudeModel] = [
-		.opus4_8, .opus4_7, .opus4_6, .sonnet4_6, .haiku4_5,
-	]
-
-	/// Match on the alias, not equality: the catalog reports several models by
-	/// their dated snapshot id (`claude-haiku-4-5-20251001`), and an equality
-	/// check would miss the hand-checked capabilities those snapshots share
-	/// with the alias — silently dropping `temperature` on models that take it.
-	static func compiledIn(for id: String) -> ClaudeModel? {
-		compiledInModels.first { id == $0.id || id.hasPrefix($0.id + "-") }
 	}
 }

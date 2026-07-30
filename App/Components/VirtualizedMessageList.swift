@@ -326,15 +326,33 @@ final class MessageListViewController: NSViewController {
 			return
 		}
 
+		// A wholesale replacement — switching chats — shares no rows with what
+		// was on screen, so a captured anchor names an arbitrary row of the
+		// incoming conversation. There is nothing to hold still: land at the
+		// bottom rather than at a row index that meant something else.
+		let replacesEverything = Set(oldIDs).isDisjoint(with: newIDs)
 		let wasAtBottom = isAtBottom
-		let anchor = wasAtBottom ? nil : captureTopAnchor()
+		let anchor = (wasAtBottom || replacesEverything) ? nil : captureTopAnchor()
 		messages = new
 		liveText = newLive
 		heightCache.removeAll()
+		lastStreamingMeasureAt.removeAll()
 		tableView.reloadData()
+
+		// `reloadData` just discarded every exact height, and `estimatedHeight`
+		// is only ever a guess. Without measuring first, the frame this scroll
+		// lands on is built entirely out of guesses and then collapses onto the
+		// real heights a runloop later, once `correctHeightIfNeeded` catches up
+		// row by row. That collapse is the settle you see on a chat swap.
+		if let anchor {
+			premeasureViewport(min(anchor.row, max(0, new.count - 1)) ..< new.count)
+		} else {
+			premeasureViewport((0 ..< new.count).reversed())
+		}
+
 		withoutAnimation {
-			if wasAtBottom { scrollToBottom() }
-			else if let anchor { restore(anchor) }
+			if let anchor { restore(anchor) }
+			else { scrollToBottom() }
 		}
 		view.needsLayout = true
 	}
@@ -390,26 +408,247 @@ final class MessageListViewController: NSViewController {
 
 	private let chipRowHeight: CGFloat = 72
 
+	/// A first guess at a row's height, refined by `measureExact` once the row
+	/// is actually built.
+	///
+	/// Whatever gap is left between the two is what the user watches settle, so
+	/// this has to model *rendered* markdown rather than wrapped plain text.
+	/// Three things the plain-text reading gets badly wrong:
+	///
+	/// - Fenced code and table rows scroll horizontally inside
+	///   `HorizontalScrollBox`. They never wrap, however long the source line
+	///   is, so wrapping them inflates a 17pt code line into 60pt of guess.
+	/// - Markup characters (fences, pipe rules, `#`, `**`) are counted as text
+	///   they are not, while headings and math render far taller than one line.
+	/// - Every bubble reserves `ChatBubbleMetrics.copyButtonHeight` for a
+	///   hover-only button that `opacity` hides but does not remove.
 	private func estimatedHeight(_ m: Message, width: CGFloat) -> CGFloat {
-		guard !effectiveText(m).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+		let text = effectiveText(m)
+		guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
 			return m.attachments.isEmpty ? 1 : chipRowHeight + 2 * rowInsetVertical
 		}
-		let usable = max(40, width - rowInsetLeading - rowInsetTrailing - 40)
-		let avgChar: CGFloat = 7.5
-		let charsPerLine = max(1, usable / avgChar)
-		let lineHeight: CGFloat = 20
-		var lines = 0
-		for raw in effectiveText(m).split(separator: "\n", omittingEmptySubsequences: false) {
-			lines += max(1, Int((CGFloat(raw.count) / charsPerLine).rounded(.up)))
+
+		let a = themes.appearance
+		let isAssistant = m.role != "user"
+
+		let usable = max(
+			40,
+			width
+				- rowInsetLeading
+				- rowInsetTrailing
+				- 2 * ChatBubbleMetrics.horizontalPadding(assistant: isAssistant)
+				- ChatBubbleMetrics.trailingGutter
+		)
+
+		var height = 2 * rowInsetVertical
+			+ 2 * ChatBubbleMetrics.verticalPadding(assistant: isAssistant)
+			+ ChatBubbleMetrics.copyButtonHeight
+			+ (isAssistant ? 2 * ChatBubbleMetrics.assistantColumnPadding : 0)
+
+		if !m.attachments.isEmpty {
+			height += chipRowHeight + ChatBubbleMetrics.attachmentSpacing
 		}
-		let verticalChrome: CGFloat = 2 * rowInsetVertical + 40
-		let mathBlocks = MathMarkdown.blockCount(in: effectiveText(m))
-		let mathBlockHeight: CGFloat = 60
-		let chipRow: CGFloat = m.attachments.isEmpty ? 0 : chipRowHeight
-		return CGFloat(max(1, lines)) * lineHeight
-			+ CGFloat(mathBlocks) * mathBlockHeight
-			+ chipRow
-			+ verticalChrome
+
+		let lineSpacing = CGFloat(a.lineSpacing)
+		let lineBox = CGFloat(a.fontSize) * Self.lineHeightRatio
+		let bodyChars = max(1, usable / (CGFloat(a.fontSize) * Self.averageCharRatio))
+
+		/// A run of `lines` stacked text lines. `lineSpacing` sits *between*
+		/// lines, so a single line doesn't pay for it.
+		func textRun(_ lines: CGFloat, box: CGFloat) -> CGFloat {
+			lines * box + max(0, lines - 1) * lineSpacing
+		}
+
+		// A user bubble is a plain `Text` — wrapped source really is what renders.
+		guard isAssistant else {
+			return height + textRun(Self.wrappedLines(text, charsPerLine: bodyChars), box: lineBox)
+		}
+
+		let blockGap = CGFloat(ChatMarkdownMetrics.blockGap) + lineSpacing
+		let codeLine = CGFloat(a.codeFontSize) * Self.lineHeightRatio
+		let tableRow = CGFloat(a.tableFontSize) * Self.lineHeightRatio + 2 * Self.tableCellPadding
+		let tableChars = max(1, usable / (CGFloat(a.tableFontSize) * Self.averageCharRatio))
+		let mathBlock = CGFloat(a.equationFontSize) * Self.mathDisplayRatio + 2 * Self.mathPadding
+
+		// The renderer folds `$$…$$` into a fenced `math` block before parsing,
+		// so walking the same rewrite means one state machine covers both.
+		let source = a.rendersMath ? MathMarkdown.preprocess(text) : text
+
+		// Block margins collapse the way CSS margins do — adjacent blocks are
+		// separated by the larger of the two, not their sum — and the last block
+		// emits no trailing margin at all. Summing them instead was worth a
+		// spurious 10pt at every block boundary.
+		var pendingMargin: CGFloat = 0
+		var emittedBlock = false
+
+		func emit(_ blockHeight: CGFloat, top: CGFloat, bottom: CGFloat) {
+			if emittedBlock { height += max(pendingMargin, top) }
+			height += blockHeight
+			pendingMargin = bottom
+			emittedBlock = true
+		}
+
+		var fence: String?
+		var fenceIsMath = false
+		var fenceLines: CGFloat = 0
+
+		var textLines: CGFloat = 0
+		var textIsList = false
+		var tableRows: CGFloat = 0
+
+		func flushText() {
+			guard textLines > 0 else { return }
+			emit(textRun(textLines, box: lineBox), top: 0, bottom: blockGap)
+			textLines = 0
+		}
+
+		func flushTable() {
+			guard tableRows > 0 else { return }
+			emit(tableRows * tableRow, top: Self.tableMargin, bottom: Self.tableMargin)
+			tableRows = 0
+		}
+
+		func flushFence() {
+			guard fence != nil else { return }
+			emit(
+				fenceIsMath
+					? mathBlock
+					: max(1, fenceLines) * codeLine + 2 * Self.codeCardPadding,
+				top: blockGap,
+				bottom: blockGap
+			)
+			fence = nil
+			fenceIsMath = false
+			fenceLines = 0
+		}
+
+		func flushBlocks() {
+			flushText()
+			flushTable()
+		}
+
+		for raw in source.split(separator: "\n", omittingEmptySubsequences: false) {
+			let line = raw.drop { $0 == " " || $0 == "\t" }
+
+			if let open = fence {
+				if line.hasPrefix(open) { flushFence() } else { fenceLines += 1 }
+				continue
+			}
+
+			// A table row lays out as a row of cells; the `|---|---|` rule draws
+			// a border and takes no height of its own.
+			if line.hasPrefix("|") {
+				flushText()
+				if !Self.isTableRule(line) {
+					tableRows += Self.wrappedLines(line, charsPerLine: tableChars)
+				}
+				continue
+			}
+			flushTable()
+
+			if let opener = Self.openingFence(line) {
+				flushText()
+				fence = opener
+				fenceIsMath = line.dropFirst(opener.count)
+					.trimmingCharacters(in: .whitespaces) == MathMarkdown.language
+				continue
+			}
+
+			if line.isEmpty {
+				flushText()
+				continue
+			}
+
+			if let level = Self.headingLevel(line) {
+				flushText()
+				emit(
+					CGFloat(a.headingSize(level)) * Self.lineHeightRatio,
+					top: lineSpacing + 10,
+					bottom: max(2, 10 - CGFloat(level))
+				)
+				continue
+			}
+
+			if Self.isThematicBreak(line) {
+				flushText()
+				emit(1, top: blockGap, bottom: blockGap)
+				continue
+			}
+
+			// A list's per-item margin is the same `lineSpacing` that separates
+			// wrapped lines, so items and paragraph lines stack identically —
+			// only the switch between the two kinds starts a new block.
+			let isList = Self.isListItem(line)
+			if isList != textIsList { flushText() }
+			textIsList = isList
+			textLines += Self.wrappedLines(line, charsPerLine: bodyChars)
+		}
+
+		flushFence()
+		flushBlocks()
+		return height
+	}
+
+	// MARK: Estimation constants
+
+	/// Line box as a multiple of point size.
+	///
+	/// Measured off `NSFont.systemFont` and `.monospacedSystemFont`, which both
+	/// hold this ratio flat from 11pt to 24pt — the whole range the appearance
+	/// sliders can reach.
+	private static let lineHeightRatio: CGFloat = 1.178
+
+	/// Average glyph advance as a multiple of point size.
+	private static let averageCharRatio: CGFloat = 0.5
+
+	/// Display-mode math runs taller than its point size; enough for a fraction.
+	private static let mathDisplayRatio: CGFloat = 2.2
+
+	private static let codeCardPadding: CGFloat = 16
+	private static let mathPadding: CGFloat = 10
+	private static let tableCellPadding: CGFloat = 7
+	private static let tableMargin: CGFloat = 8
+
+	/// Rendered lines one source line occupies once wrapped.
+	///
+	/// `SoftBreakMarkdown` gives every source line a hard break, so each wraps
+	/// on its own rather than reflowing into its neighbours.
+	private static func wrappedLines(_ line: some StringProtocol, charsPerLine: CGFloat) -> CGFloat {
+		max(1, (CGFloat(line.count) / charsPerLine).rounded(.up))
+	}
+
+	private static func openingFence(_ trimmed: Substring) -> String? {
+		for marker: Character in ["`", "~"] {
+			let run = trimmed.prefix { $0 == marker }
+			if run.count >= 3 { return String(run) }
+		}
+		return nil
+	}
+
+	private static func headingLevel(_ trimmed: Substring) -> Int? {
+		let hashes = trimmed.prefix { $0 == "#" }.count
+		guard (1 ... 6).contains(hashes), trimmed.dropFirst(hashes).first == " " else { return nil }
+		return hashes
+	}
+
+	private static func isTableRule(_ trimmed: Substring) -> Bool {
+		trimmed.allSatisfy { "|-: \t".contains($0) }
+	}
+
+	private static func isThematicBreak(_ trimmed: Substring) -> Bool {
+		let stripped = trimmed.filter { $0 != " " && $0 != "\t" }
+		guard stripped.count >= 3 else { return false }
+		return ["-", "*", "_"].contains { marker in stripped.allSatisfy { $0 == Character(marker) } }
+	}
+
+	private static func isListItem(_ trimmed: Substring) -> Bool {
+		if let first = trimmed.first, "-*+".contains(first), trimmed.dropFirst().first == " " {
+			return true
+		}
+		let digits = trimmed.prefix(while: \.isNumber)
+		guard !digits.isEmpty else { return false }
+		let after = trimmed.dropFirst(digits.count)
+		return (after.first == "." || after.first == ")") && after.dropFirst().first == " "
 	}
 
 	private func refreshHeights(for rows: IndexSet) {
@@ -647,7 +886,10 @@ final class MessageListViewController: NSViewController {
 	}
 
 	private func performInitialScroll() {
-		premeasureInitialViewport()
+		premeasureViewport(
+			(0 ..< messages.count).reversed(),
+			offsetFromBottom: initialOffsetFromBottom
+		)
 		if initialOffsetFromBottom <= 0 {
 			scrollToBottom()
 		} else {
@@ -655,22 +897,27 @@ final class MessageListViewController: NSViewController {
 		}
 	}
 
-	private func premeasureInitialViewport() {
+	/// Walk `rows` giving each an exact height until a viewport's worth is
+	/// covered, so the frame that follows is built out of measurements rather
+	/// than estimates.
+	///
+	/// Order the sequence the way the scroll is about to travel: bottom-up when
+	/// landing at the bottom, top-down from an anchor when holding a position.
+	private func premeasureViewport(_ rows: some Sequence<Int>, offsetFromBottom: CGFloat = 0) {
 		let viewport = clip.bounds.height
 		guard viewport > 0, !messages.isEmpty, columnWidth > 0 else { return }
-		let needed = initialOffsetFromBottom + viewport + 200
+		let budget = offsetFromBottom + viewport + 200
 		let cap = 60
 		var covered: CGFloat = 0
 		var measured = IndexSet()
-		var row = messages.count - 1
-		while row >= 0, covered < needed, measured.count < cap {
-			if !hasExactHeight(messages[row]) {
+		for row in rows {
+			guard covered < budget, measured.count < cap else { break }
+			if hasExactHeight(messages[row]) {
+				covered += height(for: row)
+			} else {
 				covered += measureExact(row: row)
 				measured.insert(row)
-			} else {
-				covered += height(for: row)
 			}
-			row -= 1
 		}
 		if !measured.isEmpty {
 			withoutAnimation { tableView.noteHeightOfRows(withIndexesChanged: measured) }

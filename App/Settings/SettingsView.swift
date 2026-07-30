@@ -9,6 +9,7 @@ struct SettingsView: View {
 
 	private enum Pane: String, CaseIterable, Identifiable {
 		case general = "General"
+		case models = "Models"
 		case appearance = "Appearance"
 		case accounts = "Accounts"
 
@@ -17,6 +18,7 @@ struct SettingsView: View {
 		var icon: String {
 			switch self {
 			case .general:    "gearshape"
+			case .models:     "cpu"
 			case .appearance: "paintpalette"
 			case .accounts:   "person.crop.circle"
 			}
@@ -93,6 +95,7 @@ struct SettingsView: View {
 	private var paneContent: some View {
 		switch selection {
 		case .general:    GeneralPane()
+		case .models:     ModelsPane()
 		case .appearance: AppearancePane()
 		case .accounts:   AccountsPane()
 		}

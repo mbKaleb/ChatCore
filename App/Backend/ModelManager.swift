@@ -133,6 +133,7 @@ final class ModelManager {
 	}
 
 	func unregister(_ id: BackendID) {
+		backends.removeValue(forKey: id)
 		chatModels.removeAll { model in
 			modelBackend[model.id] == id
 		}
@@ -144,6 +145,38 @@ final class ModelManager {
 			chatModels.contains { $0.id == key }
 		}
 		backendLogos.removeValue(forKey: id)
+	}
+
+	// MARK: - Vendors
+
+	/// Whether a vendor's switch in the Models pane is on. The default is
+	/// registered in `Defaults`, so this reads the same value the pane binds to.
+	nonisolated func isEnabled(_ vendor: ModelVendor) -> Bool {
+		UserDefaults.standard.bool(forKey: vendor.defaultsKey)
+	}
+
+	/// Bring the registered backends in line with the vendor switches, then
+	/// rediscover. Registration is the only gate that matters — an unregistered
+	/// backend vends nothing, so a vendor that's off can't reach the picker.
+	func applyVendorSettings() async {
+		for vendor in ModelVendor.allCases {
+			if isEnabled(vendor), let backend = vendor.backend() {
+				register(backend)
+			} else {
+				unregister(vendor.backendID)
+			}
+		}
+		await refresh()
+	}
+
+	func setVendor(_ vendor: ModelVendor, enabled: Bool) async {
+		UserDefaults.standard.set(enabled, forKey: vendor.defaultsKey)
+		await applyVendorSettings()
+	}
+
+	func models(from vendor: ModelVendor) -> [GenerativeChatModel] {
+		let backendID = vendor.backendID
+		return chatModels.filter { modelBackend[$0.id] == backendID }
 	}
 
 	// MARK: - Discovery

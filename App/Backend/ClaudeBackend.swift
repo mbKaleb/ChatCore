@@ -7,27 +7,6 @@ import Foundation
 import FoundationModels
 import ClaudeForFoundationModels
 
-nonisolated extension GenerativeChatModel {
-
-	static let claudeSonnet = GenerativeChatModel(
-		id: "vendor.anthropic.claude-sonnet-4-6",
-		displayName: "Claude Sonnet 4.6",
-		icon: .asset("ClaudeIcon"),
-		weights: .closed,
-		dataResidency: .cloud,
-		contextWindowTokens: 200_000
-	)
-
-	static let claudeOpus = GenerativeChatModel(
-		id: "vendor.anthropic.claude-opus-4-8",
-		displayName: "Claude Opus 4.8",
-		icon: .asset("ClaudeIcon"),
-		weights: .closed,
-		dataResidency: .cloud,
-		contextWindowTokens: 200_000
-	)
-}
-
 /// What the vendor told us it serves, held across the struct's copies.
 ///
 /// `ClaudeBackend` is a value type the manager stores behind an existential, so
@@ -67,20 +46,15 @@ struct ClaudeBackend: ChatBackend {
 		return nil
 	}
 
-	/// Ask Anthropic what it serves. Without a key there is nothing to ask
-	/// with, so the compiled-in pair stands in — the picker still has rows to
-	/// show, dimmed, which is what tells the user a key is what's missing.
+	/// Ask Anthropic what it serves. Every field of every row comes from that
+	/// answer — there is no built-in list to fall back to, because a built-in
+	/// list is a claim about the vendor's catalog that we can't keep true.
+	/// No key or no answer means no Claude rows, which is the honest state.
 	func availableModels() async throws -> [GenerativeChatModel] {
 		guard #available(macOS 27.0, *) else { return [] }
-		guard let apiKey else { return Self.fallbackModels }
+		guard let apiKey else { return [] }
 
-		guard let discovered = try? await AnthropicModelsAPI.models(apiKey: apiKey),
-		      !discovered.isEmpty else {
-			// An offline launch or a transient failure shouldn't empty the
-			// sidebar of every Claude model the user was mid-conversation with.
-			return Self.fallbackModels
-		}
-
+		let discovered = try await AnthropicModelsAPI.models(apiKey: apiKey)
 		await AnthropicModelCatalog.shared.replace(with: discovered)
 		return discovered.map(\.chatModel)
 	}
@@ -149,17 +123,19 @@ struct ClaudeBackend: ChatBackend {
 		}
 	}
 
-	static let fallbackModels: [GenerativeChatModel] = [.claudeSonnet, .claudeOpus]
-
-	/// Resolve the wire model — and its capabilities — for a descriptor we
-	/// handed out. Discovery is the source of truth; the compiled-in table
-	/// covers the fallback list and any descriptor that outlived a refresh.
+	/// Resolve the wire model for a descriptor we handed out. The catalog is
+	/// the only source; a descriptor that outlived its entry — a conversation
+	/// pinned to a model the account no longer serves — is still addressed by
+	/// its own id, never silently rerouted to a different model, and carries
+	/// the minimal request shape every Claude model accepts.
 	private func claudeModel(for model: GenerativeChatModel) async -> ClaudeModel {
 		if let entry = await AnthropicModelCatalog.shared.entry(for: model.id) {
 			return entry.claudeModel
 		}
-		let vendorID = String(model.id.dropFirst(AnthropicModelEntry.idPrefix.count))
-		return ClaudeModel.compiledIn(for: vendorID) ?? .sonnet4_6
+		return ClaudeModel(
+			id: String(model.id.dropFirst(AnthropicModelEntry.idPrefix.count)),
+			capabilities: .init(imageInput: true)
+		)
 	}
 
 	private func makeSession(

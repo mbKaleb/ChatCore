@@ -24,6 +24,11 @@ enum Defaults {
 		static let stripedTables = "appearanceStripedTables"
 		static let streamingMode = "streamingMode"
 
+		/// One switch per vendor in the Models pane.
+		nonisolated static func vendorEnabled(_ vendor: ModelVendor) -> String {
+			"vendorEnabled.\(vendor.rawValue)"
+		}
+
 		static let appearance = [
 			selectedThemeID, fontSize, lineSpacing, headingScale,
 			codeFontSize, rendersMath, equationScale,
@@ -35,6 +40,12 @@ enum Defaults {
 	static let defaultThemeID = ChatTheme.midnight.id
 
 	static let registered: Void = {
+		var vendorDefaults: [String: Any] = [:]
+		for vendor in ModelVendor.allCases {
+			vendorDefaults[Key.vendorEnabled(vendor)] = vendor.isEnabledByDefault
+		}
+		UserDefaults.standard.register(defaults: vendorDefaults)
+
 		UserDefaults.standard.register(defaults: [
 			Key.defaultModelID: GenerativeChatModel.onDevice.id,
 			Key.selectedThemeID: defaultThemeID,

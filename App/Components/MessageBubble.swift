@@ -2,6 +2,44 @@ import SwiftUI
 import AppKit
 import MarkdownUI
 
+/// Geometry a bubble commits to, shared with the list's height estimator.
+///
+/// The estimator has to predict this layout before SwiftUI has built it. Any
+/// number in here that only one of the two knows about is a number the rows
+/// visibly settle onto after they appear, so both sides read them from here.
+enum ChatBubbleMetrics {
+
+	static let assistantHorizontalPadding: CGFloat = 18
+	static let assistantVerticalPadding: CGFloat = 14
+
+	static let userHorizontalPadding: CGFloat = 15
+	static let userVerticalPadding: CGFloat = 11
+
+	/// Breathing room above and below an assistant column.
+	static let assistantColumnPadding: CGFloat = 4
+
+	/// The gutter the bubble can never grow into, opposite its own edge.
+	static let trailingGutter: CGFloat = 5
+
+	/// Vertical gap between the attachment chips and the text.
+	static let attachmentSpacing: CGFloat = 8
+
+	static let copyButtonGlyph: CGFloat = 16
+	static let copyButtonPadding: CGFloat = 15
+
+	/// Reserved under every bubble whether or not the button is faded in —
+	/// `opacity` hides a view, it doesn't give back its space.
+	static var copyButtonHeight: CGFloat { copyButtonGlyph + 2 * copyButtonPadding }
+
+	static func horizontalPadding(assistant: Bool) -> CGFloat {
+		assistant ? assistantHorizontalPadding : userHorizontalPadding
+	}
+
+	static func verticalPadding(assistant: Bool) -> CGFloat {
+		assistant ? assistantVerticalPadding : userVerticalPadding
+	}
+}
+
 struct MessageBubble: View {
 	let message: Message
 
@@ -44,7 +82,7 @@ struct MessageBubble: View {
 		} else {
 			HStack(spacing: 0) {
 				if message.role == "user" {
-					Spacer(minLength: 5)
+					Spacer(minLength: ChatBubbleMetrics.trailingGutter)
 					VStack(alignment: .trailing, spacing: 0) {
 						bubble
 						copyButton.opacity(isHovering ? 1 : 0)
@@ -54,8 +92,8 @@ struct MessageBubble: View {
 						bubble
 						copyButton.opacity(isHovering ? 1 : 0)
 					}
-					.padding(.vertical, 4)
-					Spacer(minLength: 5)
+					.padding(.vertical, ChatBubbleMetrics.assistantColumnPadding)
+					Spacer(minLength: ChatBubbleMetrics.trailingGutter)
 				}
 			}
 			.onHover { hovering in
@@ -68,7 +106,10 @@ struct MessageBubble: View {
 	private var bubble: some View {
 		let t = themes.theme
 		let a = themes.appearance
-		return VStack(alignment: isAssistant ? .leading : .trailing, spacing: 8) {
+		return VStack(
+			alignment: isAssistant ? .leading : .trailing,
+			spacing: ChatBubbleMetrics.attachmentSpacing
+		) {
 			if !message.attachments.isEmpty {
 				HStack(spacing: 8) {
 					ForEach(message.attachments) { attachment in
@@ -109,8 +150,8 @@ struct MessageBubble: View {
 				.chatMarkdownStyle(t, a)
 			}
 		}
-		.padding(.horizontal, isAssistant ? 18 : 15)
-		.padding(.vertical, isAssistant ? 14 : 11)
+		.padding(.horizontal, ChatBubbleMetrics.horizontalPadding(assistant: isAssistant))
+		.padding(.vertical, ChatBubbleMetrics.verticalPadding(assistant: isAssistant))
 		.background(isAssistant ? t.assistantBubble : t.userBubble)
 		.foregroundStyle(isAssistant ? t.bodyText : t.userText)
 		.clipShape(RoundedRectangle(cornerRadius: 12))
@@ -121,8 +162,11 @@ struct MessageBubble: View {
 			Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
 				.font(.caption)
 				.foregroundStyle(.secondary)
-				.frame(width: 16, height: 16)
-				.padding(15)
+				.frame(
+					width: ChatBubbleMetrics.copyButtonGlyph,
+					height: ChatBubbleMetrics.copyButtonGlyph
+				)
+				.padding(ChatBubbleMetrics.copyButtonPadding)
 				.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)

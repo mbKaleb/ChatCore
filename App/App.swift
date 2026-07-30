@@ -43,11 +43,8 @@ struct ChatCore: App {
 		WindowGroup(id: "main") {
 			AppView()
 				.task {
-					modelManager.register(AppleBackend())
-					#if canImport(ClaudeForFoundationModels)
-					modelManager.register(ClaudeBackend())
-					#endif
-					await modelManager.refresh()
+					_ = Defaults.registered
+					await modelManager.applyVendorSettings()
 				}
 		}
 		.defaultSize(width: 1000, height: 700)
