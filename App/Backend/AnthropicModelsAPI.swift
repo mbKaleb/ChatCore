@@ -152,7 +152,7 @@ nonisolated extension AnthropicModelEntry {
 	/// one — including `samplingParams`, which the API doesn't report — so
 	/// that wins; anything newer is described by the wire capabilities.
 	var claudeModel: ClaudeModel {
-		if let known = ClaudeModel.compiledIn[id] { return known }
+		if let known = ClaudeModel.compiledIn(for: id) { return known }
 
 		let caps = capabilities
 		var levels: Set<ClaudeModel.Effort> = []
@@ -177,11 +177,15 @@ nonisolated extension AnthropicModelEntry {
 
 nonisolated extension ClaudeModel {
 
-	static let compiledIn: [String: ClaudeModel] = [
-		opus4_8.id: .opus4_8,
-		opus4_7.id: .opus4_7,
-		opus4_6.id: .opus4_6,
-		sonnet4_6.id: .sonnet4_6,
-		haiku4_5.id: .haiku4_5,
+	static let compiledInModels: [ClaudeModel] = [
+		.opus4_8, .opus4_7, .opus4_6, .sonnet4_6, .haiku4_5,
 	]
+
+	/// Match on the alias, not equality: the catalog reports several models by
+	/// their dated snapshot id (`claude-haiku-4-5-20251001`), and an equality
+	/// check would miss the hand-checked capabilities those snapshots share
+	/// with the alias — silently dropping `temperature` on models that take it.
+	static func compiledIn(for id: String) -> ClaudeModel? {
+		compiledInModels.first { id == $0.id || id.hasPrefix($0.id + "-") }
+	}
 }
