@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="glass" cx="0.5" cy="0.42" r="0.62">
+      <stop offset="0" stop-color="#3A3026"/>
+      <stop offset="0.62" stop-color="#16181C"/>
+      <stop offset="1" stop-color="#0A0B0E"/>
+    </radialGradient>
+    <radialGradient id="iris" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFF6E0"/>
+      <stop offset="0.34" stop-color="#FFC061"/>
+      <stop offset="0.72" stop-color="#FF8A18"/>
+      <stop offset="1" stop-color="#C2410C"/>
+    </radialGradient>
+    <radialGradient id="pupil" cx="0.42" cy="0.36" r="0.72">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.55" stop-color="#FFE7B4"/>
+      <stop offset="1" stop-color="#FFB74D"/>
+    </radialGradient>
+  </defs>
+  <circle cx="512" cy="512" r="190" fill="url(#glass)"/>
+  <circle cx="512" cy="512" r="130" fill="url(#iris)"/>
+  <circle cx="512" cy="512" r="130" fill="none" stroke="#7C2D06" stroke-width="4" opacity="0.55"/>
+  <circle cx="512" cy="512" r="58" fill="url(#pupil)"/>
+  <ellipse cx="454" cy="434" rx="64" ry="42" fill="#FFFFFF" opacity="0.16" transform="rotate(-28 454 434)"/>
+</svg>

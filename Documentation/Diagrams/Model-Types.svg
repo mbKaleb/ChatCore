@@ -1,0 +1,114 @@
+<svg viewBox="0 0 960 660" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="660" fill="#ffffff"/>
+
+  <text x="480" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#888">ChatCore — model value layer</text>
+
+  <!-- GenerativeChatModel -->
+  <rect x="30" y="34" width="310" height="204" rx="10" fill="#eef3fb" stroke="#3b6fd4" stroke-width="1.8"/>
+  <text x="185" y="58" text-anchor="middle" font-size="15" font-weight="700" fill="#1a3f7a">GenerativeChatModel  (struct)</text>
+  <text x="185" y="76" text-anchor="middle" font-size="10.5" fill="#4a659c">Codable · Hashable · Identifiable · Sendable — pure data, no behavior</text>
+  <line x1="44" y1="86" x2="326" y2="86" stroke="#9db8e2" stroke-width="1"/>
+  <text x="46" y="106" font-size="12" fill="#223a63">id: String — stable identity, the persistence token</text>
+  <text x="46" y="125" font-size="11" fill="#6a7ea6">(Conversation.modelID · @AppStorage store this)</text>
+  <text x="46" y="147" font-size="12" fill="#223a63">displayName: String</text>
+  <text x="46" y="166" font-size="12" fill="#223a63">iconName: String  (SF Symbol)</text>
+  <text x="46" y="185" font-size="12" fill="#223a63">weights: ModelWeights</text>
+  <text x="46" y="204" font-size="12" fill="#223a63">dataResidency: DataResidency</text>
+  <text x="46" y="223" font-size="12" fill="#223a63">contextWindowTokens: Int?  (static baseline)</text>
+
+  <!-- Well-known constants -->
+  <rect x="30" y="258" width="310" height="122" rx="10" fill="#ffffff" stroke="#3b6fd4" stroke-width="1.3"/>
+  <text x="185" y="280" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1a3f7a">Well-known constants</text>
+  <text x="46" y="302" font-size="12" fill="#223a63">.onDevice — "apple.on-device"</text>
+  <text x="46" y="321" font-size="12" fill="#223a63">.privateCloud — "apple.private-cloud"</text>
+  <text x="46" y="341" font-size="11" fill="#999">.coreAdvanced · .cloudPro — inert stubs (no SDK selector)</text>
+  <text x="46" y="360" font-size="11" fill="#999">.none — placeholder for a missing selection</text>
+
+  <!-- BackendID -->
+  <rect x="370" y="258" width="230" height="122" rx="10" fill="#f7effc" stroke="#8e44ad" stroke-width="1.5"/>
+  <text x="485" y="280" text-anchor="middle" font-size="13" font-weight="700" fill="#6b2f86">BackendID</text>
+  <text x="485" y="296" text-anchor="middle" font-size="10.5" fill="#8a5aa5">RawRepresentable&lt;String&gt; · Codable</text>
+  <text x="384" y="318" font-size="12" fill="#4d2a63">.apple — built-in</text>
+  <text x="384" y="337" font-size="12" fill="#4d2a63">.none — placeholder</text>
+  <text x="384" y="356" font-size="12" fill="#4d2a63">generated — BYOM (vendor / custom)</text>
+  <text x="485" y="374" text-anchor="middle" font-size="10.5" fill="#8a5aa5">ModelManager: modelBackend[Model.ID → BackendID]</text>
+
+  <!-- join arrow -->
+  <line x1="340" y1="120" x2="616" y2="120" stroke="#555" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <text x="478" y="96" text-anchor="middle" font-size="11.5" font-weight="600" fill="#555">ModelManager.refresh()</text>
+  <text x="478" y="112" text-anchor="middle" font-size="11" fill="#777">static facts ⊕ backend.capabilities(of:) live state</text>
+
+  <!-- ModelCapabilities -->
+  <rect x="620" y="34" width="310" height="176" rx="10" fill="#fdf6ec" stroke="#c98a2b" stroke-width="1.8"/>
+  <text x="775" y="58" text-anchor="middle" font-size="15" font-weight="700" fill="#7a5416">ModelCapabilities  (struct)</text>
+  <text x="775" y="76" text-anchor="middle" font-size="10.5" fill="#a3782f">point-in-time snapshot — cached per Model.ID</text>
+  <line x1="634" y1="86" x2="916" y2="86" stroke="#dcbb84" stroke-width="1"/>
+  <text x="636" y="106" font-size="12" fill="#5c400f">availabilityState: AvailabilityState  (live)</text>
+  <text x="636" y="125" font-size="12" fill="#5c400f">dataResidency: DataResidency  (from descriptor)</text>
+  <text x="636" y="144" font-size="12" fill="#5c400f">contextWindowTokens: Int?  (live if SDK reports)</text>
+  <text x="636" y="163" font-size="12" fill="#5c400f">supportedLanguages: Int?</text>
+  <text x="636" y="186" font-size="11" fill="#a3782f">static .none — until the first refresh lands</text>
+  <text x="636" y="202" font-size="11" fill="#a3782f">var statusLevel: StatusLevel — derived, see below</text>
+
+  <!-- arrows caps -> enums -->
+  <line x1="700" y1="210" x2="600" y2="426" stroke="#aaa" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#arrow2)"/>
+  <text x="620" y="330" text-anchor="middle" font-size="10.5" fill="#999">availabilityState</text>
+  <line x1="850" y1="210" x2="850" y2="426" stroke="#8e44ad" stroke-width="1.4" marker-end="url(#arrow2)"/>
+  <text x="852" y="330" text-anchor="start" font-size="10.5" fill="#8e44ad">statusLevel =</text>
+  <text x="852" y="344" text-anchor="start" font-size="10.5" fill="#8e44ad">f(availability,</text>
+  <text x="852" y="358" text-anchor="start" font-size="10.5" fill="#8e44ad">   residency)</text>
+
+  <!-- Enums row -->
+  <text x="30" y="416" font-size="12" font-weight="600" fill="#888">Supporting enums (all String/Int raw, Codable, Sendable, with .display)</text>
+
+  <rect x="30" y="430" width="210" height="180" rx="10" fill="#eefaf1" stroke="#2e8b57" stroke-width="1.5"/>
+  <text x="135" y="452" text-anchor="middle" font-size="13" font-weight="700" fill="#1e5c3a">ModelWeights</text>
+  <text x="46" y="478" font-size="12" fill="#235c40">.open — "Open"</text>
+  <text x="46" y="498" font-size="12" fill="#235c40">.closed — "Closed"</text>
+  <text x="46" y="518" font-size="12" fill="#235c40">.mutable — BYOM / llama</text>
+  <text x="46" y="538" font-size="12" fill="#235c40">.unknown</text>
+  <text x="46" y="566" font-size="10.5" fill="#5f8a72">a property of the model,</text>
+  <text x="46" y="580" font-size="10.5" fill="#5f8a72">not a type of its own</text>
+
+  <rect x="260" y="430" width="210" height="180" rx="10" fill="#eefaf1" stroke="#2e8b57" stroke-width="1.5"/>
+  <text x="365" y="452" text-anchor="middle" font-size="13" font-weight="700" fill="#1e5c3a">DataResidency</text>
+  <text x="276" y="478" font-size="12" fill="#235c40">.onDevice — "On-Device"</text>
+  <text x="276" y="498" font-size="12" fill="#235c40">.privateCloud — "Private Cloud"</text>
+  <text x="276" y="518" font-size="12" fill="#235c40">.cloud — "Cloud"</text>
+  <text x="276" y="538" font-size="12" fill="#235c40">.unknown</text>
+  <text x="276" y="566" font-size="10.5" fill="#5f8a72">where inference runs —</text>
+  <text x="276" y="580" font-size="10.5" fill="#5f8a72">drives offline + metering facts</text>
+
+  <rect x="490" y="430" width="225" height="180" rx="10" fill="#eefaf1" stroke="#2e8b57" stroke-width="1.5"/>
+  <text x="602" y="452" text-anchor="middle" font-size="13" font-weight="700" fill="#1e5c3a">AvailabilityState</text>
+  <text x="506" y="476" font-size="11.5" fill="#235c40">.available</text>
+  <text x="506" y="494" font-size="11.5" fill="#235c40">.downloading — model not ready</text>
+  <text x="506" y="512" font-size="11.5" fill="#235c40">.disabled — AI off in Settings</text>
+  <text x="506" y="530" font-size="11.5" fill="#235c40">.deviceNotEligible</text>
+  <text x="506" y="548" font-size="11.5" fill="#235c40">.quotaExceeded — PCC daily limit</text>
+  <text x="506" y="566" font-size="11.5" fill="#235c40">.unknown</text>
+  <text x="506" y="590" font-size="10.5" fill="#5f8a72">ModelManager.reply refuses ≠ .available</text>
+
+  <rect x="735" y="430" width="195" height="180" rx="10" fill="#f7effc" stroke="#8e44ad" stroke-width="1.5"/>
+  <text x="832" y="452" text-anchor="middle" font-size="13" font-weight="700" fill="#6b2f86">StatusLevel (Int)</text>
+  <circle cx="755" cy="474" r="4.5" fill="#e74c3c"/>
+  <text x="766" y="478" font-size="11.5" fill="#4d2a63">.failed = 0</text>
+  <circle cx="755" cy="494" r="4.5" fill="#f1c40f"/>
+  <text x="766" y="498" font-size="11.5" fill="#4d2a63">.trying = 1</text>
+  <circle cx="755" cy="514" r="4.5" fill="#4083ff"/>
+  <text x="766" y="518" font-size="11.5" fill="#4d2a63">.onDevice = 2</text>
+  <circle cx="755" cy="534" r="4.5" fill="#00cc26"/>
+  <text x="766" y="538" font-size="11.5" fill="#4d2a63">.cloud = 3</text>
+  <text x="751" y="562" font-size="11" fill="#8a5aa5">isLive = onDevice | cloud</text>
+  <text x="751" y="580" font-size="11" fill="#8a5aa5">color → GlowDot in</text>
+  <text x="751" y="594" font-size="11" fill="#8a5aa5">StatusIndicator</text>
+
+  <!-- Footer -->
+  <text x="480" y="642" text-anchor="middle" font-size="11" fill="#999">static facts live on the descriptor · live truth lives in ModelCapabilities · UI status is a pure function of the pair</text>
+</svg>

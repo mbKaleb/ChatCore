@@ -1,0 +1,170 @@
+#
+//  docs.yaml
+//  ChatCore
+//
+//  Created by Kaleb Franken on 7/11/26.
+//
+
+# ChatCore — declarative model of the two architecture diagrams.
+# Source: Architecture.svg (layered runtime) + Model-Types.svg (value layer).
+# Purpose: pass as LLM context in place of the raw SVG. Semantics only, no geometry.
+
+architecture:
+  summary: >
+    Layered design. The UI talks only to ModelManager; ModelManager routes to
+    backends through the ChatBackend protocol (the seam); each backend drives a
+    concrete engine. Value types cross the seam; SwiftData stays above it.
+
+  layers:
+    - id: ui
+      name: UI
+      members: [ChatView, AppView, StatusIndicator]
+      note: sees only ModelManager — never imports an engine
+
+    - id: persistence
+      name: SwiftData
+      members: [Conversation, Message]
+      note: model is switchable per chat
+      emits: "[ChatTurn]"           # Message -> ChatTurn crossing into ModelManager
+
+    - id: manager
+      name: ModelManager
+      attributes: ["@Observable", "@MainActor"]
+      operations:
+        reply:
+          signature: "reply(to: [ChatTurn], using: model, options:) -> AsyncThrowingStream<snapshot>"
+          shape: streaming, multi-turn
+        query:
+          signature: "query(_ prompt:, using: model? = nil, options:) async throws -> String"
+          shape: one-shot (titles, tags, summaries); sugar over reply — drains stream, returns last snapshot
+      housekeeping: [register, unregister, refresh, "capabilities(of:)", "model(withID:)", fallbackModel]
+      routing: routes by BackendID; refuses any model that is not .available
+
+    - id: seam
+      name: ChatBackend
+      kind: protocol
+      constraint: Sendable
+      surface: [id, availableModels, "capabilities(of:)", reply]
+      rule: >
+        nothing above imports FoundationModels/URLSession/MLX; nothing below
+        imports SwiftData. Only wire-neutral value types cross.
+
+  backends:
+    - id: apple
+      name: AppleBackend
+      backend_id: BackendID.apple
+      status: shipping
+      routes:
+        - name: Route.device
+          engine: SystemLanguageModel        # FoundationModels
+          residency: On-Device
+          params: nil (for now)
+        - name: Route.cloud
+          engine: PrivateCloudComputeLM       # macOS 27+, iCloud quota
+          residency: Private Cloud
+          params: reasoning, quota-aware
+      vends: ["apple.on-device", "apple.private-cloud"]
+
+    - id: vendor
+      name: VendorBackend
+      backend_id: generated
+      status: later
+      config: ProviderConfig (Codable) — endpoint, dialect, Keychain auth ref
+      adapter: "WireAdapter: .openAI | .anthropic"
+      engine: HTTPS + SSE provider APIs (URLSession only inside the adapter)
+      streaming: adapter emits deltas; backend accumulates -> snapshots
+
+    - id: custom
+      name: CustomBackend
+      backend_id: generated
+      status: later
+      weights: "WeightsSource: .safetensors | .gguf, quantization, lazy load/unload"
+      engine: MLX runtime — local weight files, no network, user-provided
+      availability: available iff file on disk + RAM headroom
+      model_weights: .mutable   # only family with user-swappable weights
+
+  id_namespace:
+    - apple.on-device
+    - apple.private-cloud
+    - vendor.<backend-uuid>.<provider-model-id>
+    - custom.<backend-uuid>
+
+  invariants:
+    - UI never imports engines — only ModelManager.
+    - Backends never import SwiftData — they see [ChatTurn], nothing else.
+    - Model descriptors are pure data; behavior lives in the vending backend, found via BackendID.
+    - Streams yield cumulative snapshots, not deltas (vendor adapters accumulate to match).
+
+model_value_layer:
+  summary: >
+    Static facts live on the GenerativeChatModel descriptor; live truth lives in
+    ModelCapabilities (cached per model ID). UI status is a pure function of the
+    pair: (availabilityState, dataResidency) -> StatusLevel -> GlowDot color.
+
+  descriptor:
+    name: GenerativeChatModel
+    kind: struct
+    conformances: [Codable, Hashable, Identifiable, Sendable]
+    nature: pure data, no behavior
+    fields:
+      id: "String — stable identity, the persistence token (Conversation.modelID, @AppStorage)"
+      displayName: String
+      iconName: "String (SF Symbol)"
+      weights: ModelWeights
+      dataResidency: DataResidency
+      contextWindowTokens: "Int? (static baseline)"
+    well_known_constants:
+      - ".onDevice = apple.on-device"
+      - ".privateCloud = apple.private-cloud"
+      - ".coreAdvanced, .cloudPro — inert stubs (no SDK selector)"
+      - ".none — placeholder for a missing selection"
+
+  backend_id:
+    name: BackendID
+    conformances: ["RawRepresentable<String>", Codable]
+    cases:
+      - ".apple — built-in"
+      - ".none — placeholder"
+      - "generated — BYOM (vendor / custom)"
+    mapping: "ModelManager.modelBackend[Model.ID -> BackendID]"
+
+  capabilities:
+    name: ModelCapabilities
+    kind: struct
+    nature: point-in-time snapshot, cached per Model.ID
+    fields:
+      availabilityState: "AvailabilityState (live)"
+      dataResidency: "DataResidency (from descriptor)"
+      contextWindowTokens: "Int? (live if SDK reports)"
+      supportedLanguages: "Int?"
+    default: "static .none until the first refresh lands"
+    derived: "var statusLevel: StatusLevel = f(availability, residency)"
+
+  join:
+    via: ModelManager.refresh()
+    formula: "static facts (descriptor) ⊕ backend.capabilities(of:) live state -> ModelCapabilities"
+
+  enums:                # all String/Int raw, Codable, Sendable, with .display
+    ModelWeights:
+      note: a property of the model, not a type of its own
+      cases: [".open = Open", ".closed = Closed", ".mutable = BYOM/llama", .unknown]
+    DataResidency:
+      note: where inference runs — drives offline + metering facts
+      cases: [".onDevice = On-Device", ".privateCloud = Private Cloud", ".cloud = Cloud", .unknown]
+    AvailabilityState:
+      note: ModelManager.reply refuses anything != .available
+      cases:
+        - .available
+        - ".downloading — model not ready"
+        - ".disabled — AI off in Settings"
+        - .deviceNotEligible
+        - ".quotaExceeded — PCC daily limit"
+        - .unknown
+    StatusLevel:
+      raw: Int
+      note: "isLive = onDevice | cloud; color -> GlowDot in StatusIndicator"
+      cases:
+        - ".failed = 0 (red)"
+        - ".trying = 1 (yellow)"
+        - ".onDevice = 2 (blue)"
+        - ".cloud = 3 (green)"
