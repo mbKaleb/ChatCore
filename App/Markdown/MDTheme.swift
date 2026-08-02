@@ -115,11 +115,30 @@ extension Theme {
 
 // MARK: - Applying the theme
 
+/// The last `Theme` built, reused until one of its inputs changes.
+///
+/// `Theme.chatCore` allocates roughly twenty escaping closures, and
+/// `chatMarkdownStyle` is applied inside `MessageBubble.body` — so every row was
+/// building a fresh one on every body evaluation, and rows re-evaluate
+/// constantly as they scroll in and out. The inputs only change when the user
+/// touches the appearance settings, so a single slot is enough.
+private enum ChatMarkdownTheme {
+
+	private static var cached: (theme: ChatTheme, appearance: ChatAppearance, value: Theme)?
+
+	static func resolved(_ t: ChatTheme, _ a: ChatAppearance) -> Theme {
+		if let cached, cached.theme == t, cached.appearance == a { return cached.value }
+		let value = Theme.chatCore(t, a)
+		cached = (t, a, value)
+		return value
+	}
+}
+
 extension View {
 
 	func chatMarkdownStyle(_ t: ChatTheme, _ a: ChatAppearance) -> some View {
 		self
-			.markdownTheme(.chatCore(t, a))
+			.markdownTheme(ChatMarkdownTheme.resolved(t, a))
 			.lineSpacing(a.lineSpacing)
 	}
 }

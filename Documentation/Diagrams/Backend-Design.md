@@ -259,9 +259,43 @@ else is resolvable from it at runtime.
 5. Streams yield cumulative snapshots, not deltas (FoundationModels
    convention; vendor adapters accumulate to match).
 
+## Session state — history is a transcript, not instructions
+
+The seam hands a backend the whole conversation on every send, but only the last
+turn is new. `AppleBackend` therefore prompts with that turn alone and supplies
+the rest as a `Transcript`, kept per conversation by `TranscriptStore`
+(`ChatOptions.sessionKey` carries the conversation's UUID across the seam — a
+bare UUID, so the no-SwiftData-below-the-seam invariant holds and stateless
+backends can ignore it).
+
+Two reasons, in order of importance:
+
+1. **Instructions are not a transcript.** Instructions are the app speaking and
+   carry standing a prompt does not. Replaying history through them promotes
+   whatever the user typed three turns ago to the same authority as the app's
+   own rules. Only genuine `system` turns fold into the instructions entry now;
+   user and assistant turns become `prompt` and `response` entries.
+2. **A rebuilt prefix is an unrecognizable one.** Re-serializing history each
+   send gives the runtime no prefix it can match against the one it just read.
+
+The cache is an optimization that can never be a correctness risk: an entry is
+used only while its fingerprint still matches the exact turns preceding this
+send. An edited message, a deleted one, a relaunch, or a model switched mid-chat
+all miss and rebuild from turns, which remain the source of truth. Keys include
+the route, because reasoning entries from Private Cloud mean nothing to the
+on-device model. A failed or cancelled turn invalidates its entry rather than
+leaving the next send to build on a response nothing finished.
+
+Context overflow is handled where the numbers are: `LanguageModelError`
+`.contextSizeExceeded` carries `contextSize` and `tokenCount`, so the recovery
+sheds that many tokens' worth of the oldest entries — whole entries, instructions
+pinned — and retries once. The retry is skipped if any token already reached the
+screen, since restarting a visible answer mid-sentence is worse than the error.
+Summarizing the shed span via `query` is the natural next iteration.
+
 ## Open questions
 
-- Session caching per conversation inside AppleBackend (perf + daemon-log noise).
-- History strategy when a conversation outgrows the context window (trim? summarize via `query`?).
 - Does `Route.device` ever grow a variant selector (Core Advanced), or does Apple route transparently?
+- Should `ClaudeBackend` move to the same transcript-shaped history, or does the
+  Anthropic wire format make `historyInstructions` the right shape there?
 - ADM-style image models: separate `ImageBackend` protocol, not this seam.

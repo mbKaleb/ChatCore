@@ -14,8 +14,27 @@ enum MathMarkdown {
 		("\\[", "\\]"),
 	]
 
-	static func preprocess(_ source: String) -> String {
-		guard source.contains("$$") || source.contains("\\[") else { return source }
+	/// The inline counterpart, rewritten to `$…$` rather than to a fence.
+	private static let inlineDelimiters: [(open: String, close: String)] = [
+		("\\(", "\\)"),
+	]
+
+	/// - Parameter inlineMath: Rewrite `\( … \)` into `$ … $` as well.
+	///
+	///   This has to happen *before* the markdown parser runs, and that is the
+	///   whole reason it exists: CommonMark treats a backslash before ASCII
+	///   punctuation as an escape, so `\(x\)` reaches a renderer as the literal
+	///   text `(x)` with the delimiters already eaten and no way to tell it from
+	///   a parenthesis the author typed. Models write inline math this way
+	///   constantly, which is why `( f(x) = x^n )` shows up in transcripts.
+	///
+	///   Off by default because only `selectable2` renders `$…$`; for the other
+	///   renderers the rewrite would swap one piece of visible punctuation for
+	///   another.
+	static func preprocess(_ source: String, inlineMath: Bool = false) -> String {
+		let hasBlock = source.contains("$$") || source.contains("\\[")
+		let hasInline = inlineMath && source.contains("\\(")
+		guard hasBlock || hasInline else { return source }
 
 		var out: [String] = []
 		var plain: [String] = []
@@ -23,12 +42,26 @@ enum MathMarkdown {
 
 		func flushPlain() {
 			guard !plain.isEmpty else { return }
-			out.append(contentsOf: rewrite(plain.joined(separator: "\n")).components(separatedBy: "\n"))
+			out.append(
+				contentsOf: rewrite(plain.joined(separator: "\n"), inlineMath: inlineMath)
+					.components(separatedBy: "\n")
+			)
 			plain.removeAll()
 		}
 
+		// An indented code block only starts after a blank line — otherwise four
+		// spaces are a wrapped paragraph, which is ordinary prose that can hold
+		// an equation.
+		var blankRun = true
+		// ...and it can't start inside a list at all, where the same indent is how
+		// a paragraph stays attached to its bullet. Models put display math under
+		// list items constantly, so reading that as code would cost far more than
+		// the literal `$$` in an indented block this is here to protect.
+		var inList = false
+
 		for line in source.components(separatedBy: "\n") {
 			let trimmed = line.drop { $0 == " " || $0 == "\t" }
+			let isBlank = trimmed.isEmpty
 
 			if let open = fence {
 				out.append(line)
@@ -37,13 +70,46 @@ enum MathMarkdown {
 				flushPlain()
 				out.append(line)
 				fence = opener
+			} else if blankRun, !inList, isIndentedCode(line) {
+				// Markdown reads this as code, so the `$$` in it is literal.
+				flushPlain()
+				out.append(line)
 			} else {
 				plain.append(line)
+			}
+
+			if fence == nil {
+				blankRun = isBlank
+				if isListItem(trimmed) {
+					inList = true
+				} else if !isBlank, !line.hasPrefix(" "), !line.hasPrefix("\t") {
+					// Unindented prose ends the list.
+					inList = false
+				}
 			}
 		}
 
 		flushPlain()
 		return out.joined(separator: "\n")
+	}
+
+	/// A bullet or an ordered marker, already stripped of its indent.
+	private static func isListItem(_ trimmed: Substring) -> Bool {
+		if let first = trimmed.first, "-*+".contains(first) {
+			return trimmed.dropFirst().first == " "
+		}
+		let digits = trimmed.prefix { $0.isNumber }
+		guard !digits.isEmpty else { return false }
+		let rest = trimmed.dropFirst(digits.count)
+		guard let marker = rest.first, marker == "." || marker == ")" else { return false }
+		return rest.dropFirst().first == " "
+	}
+
+	/// Four spaces or a tab of indent, and something after it.
+	private static func isIndentedCode(_ line: String) -> Bool {
+		if line.hasPrefix("\t") { return true }
+		guard line.hasPrefix("    ") else { return false }
+		return !line.dropFirst(4).allSatisfy { $0 == " " || $0 == "\t" }
 	}
 
 	private static func openingFence(_ trimmed: Substring) -> String? {
@@ -54,7 +120,7 @@ enum MathMarkdown {
 		return nil
 	}
 
-	private static func rewrite(_ chunk: String) -> String {
+	private static func rewrite(_ chunk: String, inlineMath: Bool) -> String {
 		var emitted = ""
 		var pending = ""
 		var i = chunk.startIndex
@@ -81,6 +147,17 @@ enum MathMarkdown {
 				continue
 			}
 
+			// Inline math stays in the flow of its sentence, so it appends to
+			// `pending` rather than closing it out the way a block does.
+			if inlineMath,
+			   let pair = inlineDelimiters.first(where: { chunk[i...].hasPrefix($0.open) }),
+			   let body = matchedBody(for: pair, after: i, in: chunk),
+			   isInlineBody(body.text) {
+				pending += "$" + body.text + "$"
+				i = body.end
+				continue
+			}
+
 			pending.append(chunk[i])
 			i = chunk.index(after: i)
 		}
@@ -91,6 +168,16 @@ enum MathMarkdown {
 			with: "\n\n",
 			options: .regularExpression
 		)
+	}
+
+	/// Whether a `\( … \)` body is plausibly one inline equation.
+	///
+	/// `matchedBody` takes the first closer anywhere ahead, so an unmatched `\(`
+	/// would otherwise swallow the rest of the message into one equation. A `$`
+	/// inside the body is rejected too — it would close the very delimiters this
+	/// is about to write.
+	private static func isInlineBody(_ body: String) -> Bool {
+		!body.contains("$") && !body.contains("\n\n") && body.count <= 400
 	}
 
 	private static func delimiter(startingAt i: String.Index, in chunk: String) -> (open: String, close: String)? {

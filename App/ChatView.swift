@@ -7,9 +7,15 @@ import MarkdownUI
 
 struct ChatView: View {
 	@Environment(ModelManager.self) private var manager
+	/// The sidebar state and the pending-focus flag are read here rather than
+	/// handed down: routing them through `ConversationDetail` made that view —
+	/// and the toolbar it declares — re-render on every sidebar toggle, for a
+	/// value only this one reacts to.
+	@Environment(AppModel.self) private var app
 	@Bindable var conversation: Conversation
-	var sidebarOpen: Bool
-	@Binding var focusInputOnAppear: Bool
+	/// How the transcript is drawn. Passed in rather than read from settings
+	/// here, so this view has no opinion about which renderers exist.
+	var renderer: TranscriptRenderer
 	@State private var input: String = ""
 	@State private var pastedAttachments: [MessageAttachment] = []
 	@State private var showFileImporter = false
@@ -26,7 +32,7 @@ struct ChatView: View {
 
 	private var isResponding: Bool {
 		guard let last = sortedMessages.last else { return false }
-		return manager.liveText[last.id] != nil
+		return manager.generatingMessageID == last.id
 	}
 
 	private var isSelectingText: Bool {
@@ -44,11 +50,14 @@ struct ChatView: View {
 	var body: some View {
 		let _ = Self.printChanges()
 		ZStack(alignment: .bottom) {
-			VirtualizedMessageList(
-				messages: sortedMessages,
-				scrollOffsetFromBottom: $conversation.scrollOffsetFromBottom,
-				scrollToBottomToken: scrollToBottomToken,
-				bottomInset: composeHeight
+			renderer.transcript(
+				TranscriptContext(
+					conversationID: conversation.id,
+					messages: sortedMessages,
+					scrollOffsetFromBottom: $conversation.scrollOffsetFromBottom,
+					scrollToBottomToken: scrollToBottomToken,
+					bottomInset: composeHeight
+				)
 			)
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 				.id(conversation.id)
@@ -122,7 +131,7 @@ struct ChatView: View {
 		.background {
 			BackendWatermark(
 				logoName: manager.logoName(for: conversation.modelID),
-				isEmpty: conversation.messages.isEmpty
+				isEmpty: sortedMessagesCache.isEmpty
 			)
 		}
 		.background { PasteImageCatcher(onPaste: acceptImages(from:)) }
@@ -153,23 +162,17 @@ struct ChatView: View {
 			if sortedMessagesCache.isEmpty {
 				sortedMessagesCache = conversation.messages.sorted { $0.timestamp < $1.timestamp }
 			}
-			if focusInputOnAppear {
-				focusInputOnAppear = false
-				inputFocused = true
-			}
+			claimPendingFocus()
 		}
 		.onChange(of: conversation.id) {
 			input = ""
 			errorMessage = nil
 			errorSuggestsSettings = false
 			sortedMessagesCache = conversation.messages.sorted { $0.timestamp < $1.timestamp }
-			if focusInputOnAppear {
-				focusInputOnAppear = false
-				inputFocused = true
-			}
+			claimPendingFocus()
 		}
-		.onChange(of: sidebarOpen) {
-			if !sidebarOpen { inputFocused = true }
+		.onChange(of: app.sidebarOpen) {
+			if !app.sidebarOpen { inputFocused = true }
 		}
 		.alert(
 			"Oops!",
@@ -191,8 +194,25 @@ struct ChatView: View {
 		}
 	}
 
+	/// Take the focus a freshly created chat was promised, once.
+	///
+	/// The flag is cleared on the way through: `newConversation` sets it and
+	/// whichever of appear-or-id-change happens first honours it.
+	private func claimPendingFocus() {
+		guard app.focusInputOnNextChat else { return }
+		app.focusInputOnNextChat = false
+		inputFocused = true
+	}
+
+	/// The conversation's own model, or nothing.
+	///
+	/// There is deliberately no substitute here. The pinned model can vanish —
+	/// a failed catalog fetch, a removed key, a model the vendor retired — and
+	/// falling back to whatever else is loaded silently answers on a different
+	/// vendor's model than the one the user chose, on-device instead of cloud,
+	/// with nothing on screen to say so.
 	private var resolvedModel: GenerativeChatModel? {
-		manager.model(withID: conversation.modelID) ?? manager.fallbackModel
+		manager.model(withID: conversation.modelID)
 	}
 
 	private func isCloudUnavailable(_ error: Error) -> Bool {
@@ -457,7 +477,7 @@ struct ChatView: View {
 
 		do {
 			guard let model = resolvedModel else {
-				throw ModelManagerError.noModelSelected
+				throw ModelManagerError.modelUnavailable(conversation.modelID)
 			}
 			let stream = manager.reply(to: history, using: model, options: conversation.options)
 
@@ -467,6 +487,16 @@ struct ChatView: View {
 				let minVisualFlushInterval: TimeInterval = 1.0 / 20
 				var lastPersistFlush = Date.distantPast
 				let minPersistFlushInterval: TimeInterval = 1.0
+
+				// Both throttles below skip everything that lands inside their last
+				// interval, so the tail has to be pushed once the stream is done.
+				// A `defer` rather than a line after the loop: cancelling mid-turn
+				// throws out of the loop, and that partial text is still kept.
+				defer {
+					manager.updateGeneration(assistantMsg.id, text: latest)
+					manager.recordChunk(latest, for: assistantMsg.id)
+					assistantMsg.text = latest
+				}
 
 				for try await snapshot in stream {
 					latest = snapshot
@@ -485,8 +515,7 @@ struct ChatView: View {
 			}
 			manager.registerCancellation(for: assistantMsg.id) { streaming.cancel() }
 
-			_ = try await streaming.value
-			assistantMsg.text = manager.liveText[assistantMsg.id] ?? assistantMsg.text
+			assistantMsg.text = try await streaming.value
 		} catch {
 			let latest = manager.liveText[assistantMsg.id] ?? assistantMsg.text
 			assistantMsg.text = latest
@@ -576,8 +605,8 @@ private struct BackendWatermark: View {
 
 #Preview {
 	struct PreviewContainer: View {
-		@State private var focusInputOnAppear = true
-		@State private var sidebarOpen = false
+		@State private var app = AppModel()
+		@State private var renderer = TranscriptRenderer.default
 
 		private let conversation: Conversation = {
 			var config = Chat.default
@@ -588,11 +617,25 @@ private struct BackendWatermark: View {
 		var body: some View {
 			ChatView(
 				conversation: conversation,
-				sidebarOpen: sidebarOpen,
-				focusInputOnAppear: $focusInputOnAppear
+				renderer: renderer
 			)
+			.environment(app)
 			.environment(ModelManager())
 			.environment(ThemeManager())
+			// Its own control rather than the stored preference: the preview is
+			// where two renderers get held against each other, and switching
+			// here doesn't disturb what the running app is set to.
+			.overlay(alignment: .topTrailing) {
+				Picker("Renderer", selection: $renderer) {
+					ForEach(TranscriptRenderer.allCases) { renderer in
+						Text(renderer.displayName).tag(renderer)
+					}
+				}
+				.pickerStyle(.menu)
+				.labelsHidden()
+				.fixedSize()
+				.padding(8)
+			}
 		}
 	}
 

@@ -96,13 +96,23 @@ importable, and it vends models only when it finds an API key. It looks in two
 places, in order:
 
 1. **Keychain** — service `com.franken.ChatCore`, account `anthropic.api-key`.
-   Set this from the app's Settings pane; the key is validated before it's
-   stored.
+   Set this from Settings › Accounts; the key is stored first, then checked
+   against the vendor, so a dropped network can't lose a good key.
 2. **Environment** — `ANTHROPIC_API_KEY`, useful for scheme-level development.
 
 With no key, `availableModels()` returns nothing and the picker simply shows the
 Apple routes. Nothing errors and nothing leaks — the secret itself never appears
 in a `ProviderConfig`, only a Keychain reference.
+
+### Other vendors
+
+Settings › Accounts carries a field for every vendor in `ModelVendor` that needs
+a key — OpenAI, Google, xAI, Meta, Mistral, DeepSeek, Alibaba Cloud, Moonshot,
+Cohere, and Hugging Face — each stored under `<vendor>.api-key` in the same
+service, and each verified against that vendor's own endpoint by
+`APIKeyValidator`. Only Apple and Anthropic have backends behind them today; the
+rest take a key now and say so in the footer, so nothing has to be re-entered
+when a wire lands.
 
 ---
 
@@ -186,8 +196,11 @@ App/
     NetworkMonitor.swift · VendorTypes.swift
   Types/                 SwiftData models + wire-neutral values
     ModelTypes/GenerativeChatModel.swift
+  Rendering/
+    TranscriptRenderer.swift  which renderer draws the chat, and what one is given
+  Compiled/              the compiled CoreText transcript: compiler, blocks, caches
   Markdown/              markdown, math, code cards, render cache
-  Components/            message bubbles, virtualized list, status, paste catcher
+  Components/            message bubbles, the other two transcript lists, status, paste catcher
   Settings/              settings window and appearance
   Theme/                 fonts and theme manager
 Documentation/

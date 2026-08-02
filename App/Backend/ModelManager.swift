@@ -17,13 +17,51 @@ final class ModelManager {
 
 	private(set) var chatModels: [GenerativeChatModel] = []
 
+	/// The models a newer release of the same family has replaced, computed over
+	/// the whole vended catalog.
+	///
+	/// Every list that leads with what a vendor ships today reads this one set
+	/// rather than deriving its own. Derived per-list, the answer changes with
+	/// the list: run it over the models that survived a filter and the newest
+	/// *surviving* Opus becomes current, so a pane and a picker looking at the
+	/// same catalog would disagree about which models are the old ones.
+	private(set) var supersededModelIDs: Set<GenerativeChatModel.ID> = []
+
+	/// Switch positions someone has actually set, for the models the vendors
+	/// currently vend.
+	///
+	/// Rebuilt from `UserDefaults` on every discovery, so it can only ever name
+	/// models a vendor just offered — and the stored value stays put for the ones
+	/// it doesn't, since a vendor that failed to answer hasn't retired anything.
+	/// A model with no entry here has never been switched either way, which is
+	/// not the same as being switched on.
+	private(set) var modelOverrides: [GenerativeChatModel.ID: Bool] = [:]
+
 	private(set) var capabilities: [GenerativeChatModel.ID: ModelCapabilities] = [:]
 
-	private(set) var isRefreshing = false
+	/// Why a backend vended nothing, when the reason was that we couldn't ask.
+	///
+	/// An empty model list means the same thing on screen whether the vendor
+	/// serves nothing or the request failed, so the two have to be told apart
+	/// here — this is what lets the Models pane say "couldn't reach Anthropic"
+	/// instead of letting the rows disappear without explanation.
+	private(set) var discoveryErrors: [BackendID: String] = [:]
+
+	/// Refreshes are serialized, but a caller can still join one already in
+	/// flight, so the depth is counted rather than flagged — a bare `Bool` with
+	/// a `defer` lets whichever run finishes first clear it for the other.
+	private(set) var activeRefreshes = 0
+
+	var isRefreshing: Bool { activeRefreshes > 0 }
 
 	private(set) var probeGeneration = 0
 
 	private(set) var liveText: [Message.ID: String] = [:]
+
+	/// Scalar mirror of "is a turn in flight", published separately from
+	/// `liveText` so chrome that only needs the on/off state doesn't get
+	/// invalidated by every token flush.
+	private(set) var generatingMessageID: Message.ID?
 
 	@ObservationIgnored
 	private var cancelHandlers: [Message.ID: @MainActor () -> Void] = [:]
@@ -38,6 +76,7 @@ final class ModelManager {
 		liveText[messageID] = ""
 		liveChunks[messageID] = []
 		chunkCursor[messageID] = ChunkCursor(text: "", byteCount: 0)
+		generatingMessageID = messageID
 	}
 
 	func registerCancellation(for messageID: Message.ID, _ cancel: @escaping @MainActor () -> Void) {
@@ -80,6 +119,7 @@ final class ModelManager {
 		liveChunks.removeValue(forKey: messageID)
 		chunkCursor.removeValue(forKey: messageID)
 		cancelHandlers.removeValue(forKey: messageID)
+		if generatingMessageID == messageID { generatingMessageID = nil }
 	}
 
 	// MARK: - Backends (private — nothing above this layer sees them)
@@ -130,6 +170,7 @@ final class ModelManager {
 	func register(_ backend: any ChatBackend) {
 		backends[backend.id] = backend
 		backendLogos[backend.id] = backend.logoName
+		discoveryGeneration &+= 1
 	}
 
 	func unregister(_ id: BackendID) {
@@ -145,6 +186,11 @@ final class ModelManager {
 			chatModels.contains { $0.id == key }
 		}
 		backendLogos.removeValue(forKey: id)
+		// A vendor that's off has no failure to report — otherwise switching it
+		// off would leave its error row on screen with no rows to explain.
+		discoveryErrors.removeValue(forKey: id)
+		catalogDidChange()
+		discoveryGeneration &+= 1
 	}
 
 	// MARK: - Vendors
@@ -179,35 +225,142 @@ final class ModelManager {
 		return chatModels.filter { modelBackend[$0.id] == backendID }
 	}
 
+	// MARK: - Model switches
+
+	/// The catalog minus the models switched off in the Models pane — what every
+	/// picker offers. The Models pane itself reads `chatModels`, being the one
+	/// place a switched-off model still has to be visible to be switched back on.
+	var enabledChatModels: [GenerativeChatModel] {
+		chatModels.filter { isEnabled($0) }
+	}
+
+	func isEnabled(_ model: GenerativeChatModel) -> Bool {
+		isEnabled(model.id)
+	}
+
+	/// Whether a model is on offer.
+	///
+	/// Only the vendor says which models exist and which of them it has since
+	/// replaced, so an untouched switch takes its position from that rather than
+	/// from a list kept here: a model the vendor still serves but has superseded
+	/// starts off, everything else starts on. Which way that falls can change
+	/// under a model — the day a vendor ships the next Sonnet, the current one
+	/// becomes an old one — and it should, for anyone who never took a view.
+	/// Setting the switch is what pins it against the catalog moving.
+	func isEnabled(_ id: GenerativeChatModel.ID) -> Bool {
+		modelOverrides[id] ?? !supersededModelIDs.contains(id)
+	}
+
+	func setModel(_ model: GenerativeChatModel, enabled: Bool) {
+		UserDefaults.standard.set(enabled, forKey: Defaults.Key.modelEnabled(model.id))
+		modelOverrides[model.id] = enabled
+	}
+
+	/// Take the derived state that hangs off the catalog and recompute it from
+	/// the catalog as it now stands. Called wherever `chatModels` is assigned.
+	private func catalogDidChange() {
+		supersededModelIDs = ModelRelease.supersededIDs(in: chatModels)
+		modelOverrides = chatModels.reduce(into: [:]) { overrides, model in
+			let key = Defaults.Key.modelEnabled(model.id)
+			if let stored = UserDefaults.standard.object(forKey: key) as? Bool {
+				overrides[model.id] = stored
+			}
+		}
+	}
+
 	// MARK: - Discovery
 
-	func refresh(reprobing: Bool = false) async {
-		isRefreshing = true
+	/// The run currently discovering models, if any.
+	///
+	/// Discovery is a network round trip per backend now, not a return of
+	/// constants, so two refreshes overlap easily — four call sites fire it,
+	/// including every app activation. Two overlapping runs both commit, last
+	/// writer wins, and the loser can be the newer one: a slow *failing* run
+	/// would erase the catalog a fast successful one had just installed.
+	@ObservationIgnored
+	private var discoveryTask: Task<Void, Never>?
 
-		defer { isRefreshing = false }
+	/// Bumped whenever the set of registered backends changes. A run that
+	/// started under a different set is answering a question nobody is asking
+	/// any more, so it stamps itself at entry and drops its own result rather
+	/// than committing it — the same discard-on-stale rule the probes use.
+	@ObservationIgnored
+	private var discoveryGeneration = 0
+
+	/// The generation the in-flight run was started under.
+	@ObservationIgnored
+	private var discoveryTaskGeneration = 0
+
+	func refresh(reprobing: Bool = false) async {
+		// A plain refresh asks exactly the question a run in flight is already
+		// answering, so it joins that one instead of racing it — but only if
+		// that run is still answering the *current* question. A vendor toggled
+		// on mid-flight bumps the generation, which means the run in flight is
+		// already condemned to discard its result; joining it would return
+		// having discovered nothing for the vendor just switched on.
+		if !reprobing, let inFlight = discoveryTask, discoveryTaskGeneration == discoveryGeneration {
+			await inFlight.value
+			return
+		}
+
+		// A reprobing refresh has different preconditions — a key was just
+		// added or removed — so it has to actually run. It still queues behind
+		// whatever is in flight rather than interleaving with it.
+		let previous = discoveryTask
+		let task = Task { @MainActor [weak self] in
+			await previous?.value
+			await self?.performRefresh(reprobing: reprobing)
+		}
+		discoveryTask = task
+		discoveryTaskGeneration = discoveryGeneration
+		await task.value
+		if discoveryTask == task { discoveryTask = nil }
+	}
+
+	private func performRefresh(reprobing: Bool) async {
+		activeRefreshes += 1
+
+		defer { activeRefreshes -= 1 }
 
 		if reprobing { invalidateProbes() }
 
+		let generation = discoveryGeneration
+
 		var models: [GenerativeChatModel] = []
 		var mapping: [GenerativeChatModel.ID: BackendID] = [:]
+		var failures: [BackendID: String] = [:]
 
-		await withTaskGroup(of: (BackendID, [GenerativeChatModel]?).self) { group in
+		await withTaskGroup(of: (BackendID, Result<[GenerativeChatModel], any Error>).self) { group in
 			for (backendID, backend) in backends {
 				group.addTask {
-					let vended = try? await backend.availableModels()
-					return (backendID, vended)
+					do {
+						return (backendID, .success(try await backend.availableModels()))
+					} catch {
+						return (backendID, .failure(error))
+					}
 				}
 			}
-			for await (backendID, vended) in group {
-				if let vended {
+			for await (backendID, outcome) in group {
+				switch outcome {
+				case .success(let vended):
 					models.append(contentsOf: vended)
 					for m in vended { mapping[m.id] = backendID }
+				case .failure(let error):
+					// "We couldn't ask" and "there's nothing to serve" produce
+					// the same empty list, and only one of them is the user's
+					// problem to act on. The rows still go, but the reason goes
+					// on screen with them.
+					failures[backendID] = Self.reason(for: error)
 				}
 			}
 		}
 
+		guard generation == discoveryGeneration else { return }
+
 		chatModels = models
 		modelBackend = mapping
+		discoveryErrors = failures
+		catalogDidChange()
 
 		var newCaps: [GenerativeChatModel.ID: ModelCapabilities] = [:]
 		await withTaskGroup(of: (GenerativeChatModel.ID, ModelCapabilities).self) { group in
@@ -258,12 +411,25 @@ final class ModelManager {
 				expired = true
 			}
 		}
+		guard generation == discoveryGeneration else { return }
+
 		capabilities = merged
 		if expired { probeGeneration &+= 1 }
 
 		for model in models where model.dataResidency == .onDevice {
 			Task { await probeConnection(for: model) }
 		}
+	}
+
+	/// User-facing text for a discovery failure. Backends describe their own
+	/// failures — the view layer shouldn't be assembling sentences out of
+	/// status codes.
+	private static func reason(for error: any Error) -> String {
+		(error as? any LocalizedError)?.errorDescription ?? error.localizedDescription
+	}
+
+	func discoveryError(for vendor: ModelVendor) -> String? {
+		discoveryErrors[vendor.backendID]
 	}
 
 	// MARK: - Connection Probes
@@ -410,8 +576,15 @@ final class ModelManager {
 		return backendLogos[backendID]
 	}
 
+	/// Prefers what's on offer, but a catalog switched off entirely is still a
+	/// catalog — returning nil there would say "no model exists" when what
+	/// happened is that none of them are being offered.
 	var fallbackModel: GenerativeChatModel? {
-		chatModels.first { $0.dataResidency == .onDevice } ?? chatModels.first
+		let offered = enabledChatModels
+		return offered.first { $0.dataResidency == .onDevice }
+			?? offered.first
+			?? chatModels.first { $0.dataResidency == .onDevice }
+			?? chatModels.first
 	}
 
 	// MARK: - Capabilities
@@ -473,6 +646,19 @@ enum ModelManagerError: Error {
 	case imagesUnsupported(String)
 }
 
+extension ModelManagerError {
+
+	/// A persisted id is the only handle left once a model leaves the catalog,
+	/// and it's a namespaced key, not a name. Strip the namespace so an alert
+	/// says "claude-opus-5" rather than "vendor.anthropic.claude-opus-5".
+	static func readable(_ id: GenerativeChatModel.ID) -> String {
+		if id.hasPrefix(AnthropicModelEntry.idPrefix) {
+			return String(id.dropFirst(AnthropicModelEntry.idPrefix.count))
+		}
+		return id
+	}
+}
+
 extension ModelManagerError: LocalizedError {
 	var errorDescription: String? {
 		switch self {
@@ -481,7 +667,8 @@ extension ModelManagerError: LocalizedError {
 		case .noModelSelected:
 			"No model is available to reply."
 		case .modelUnavailable(let id):
-			"The model \"\(id)\" is not available right now."
+			"\(ModelManagerError.readable(id)) isn't available right now. "
+				+ "Pick another model for this chat, or check Settings."
 		case .imagesUnsupported(let name):
 			"\(name) can't read images. Pick a model that can, then send again."
 		}

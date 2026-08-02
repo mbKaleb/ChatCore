@@ -16,7 +16,7 @@
             endingColumnNumber = "9223372036854775807"
             startingLineNumber = "314"
             endingLineNumber = "314"
-            landmarkName = "clearSelectionIfFocused()"
+            landmarkName = "rebuildSnippets(for:)"
             landmarkType = "7">
          </BreakpointContent>
       </BreakpointProxy>

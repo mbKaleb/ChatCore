@@ -6,10 +6,32 @@
 import SwiftUI
 import AppKit
 
-struct ListMessageView: View {
+struct ListMessageView: TranscriptRendering {
 	var messages: [Message]
 
 	@Binding var scrollOffsetFromBottom: Double
+
+	var scrollToBottomToken: Int = 0
+	var bottomInset: CGFloat = 0
+
+	/// Which text container draws assistant markdown. The scroll machinery is
+	/// identical whichever is picked, which is the point — it keeps the
+	/// `selectable` renderers honest A/Bs against this one.
+	var assistantText: AssistantTextEngine = .markdownUI
+
+	/// `conversationID` goes unused: the rows are ordinary SwiftUI views with
+	/// nothing compiled or measured to hold onto between chats.
+	init(_ context: TranscriptContext) {
+		self.messages = context.messages
+		self._scrollOffsetFromBottom = context.scrollOffsetFromBottom
+		self.scrollToBottomToken = context.scrollToBottomToken
+		self.bottomInset = context.bottomInset
+	}
+
+	init(_ context: TranscriptContext, assistantText: AssistantTextEngine) {
+		self.init(context)
+		self.assistantText = assistantText
+	}
 
 	@State private var viewportHeight: CGFloat = 0
 	@State private var viewportWidth: CGFloat = 0
@@ -32,16 +54,21 @@ struct ListMessageView: View {
 	private let contentLeading: CGFloat = 16
 	private let contentTrailing: CGFloat = 26
 
+	/// The empty row under the last message.
+	///
+	/// Two jobs: keep the last message clear of the compose bar floating over the
+	/// transcript, and leave the newest exchange enough room beneath it to sit at
+	/// the top of the viewport rather than pinned to the bottom of it.
 	private var bottomSpacerHeight: CGFloat {
 		let userHeight = messages.last?.role == "assistant"
 			? lastUserMessageHeight
 			: 0
 
 		let remainingLines =
-			((viewportHeight - lastMessageHeight - userHeight) / lineHeight)
+			((viewportHeight - bottomInset - lastMessageHeight - userHeight) / lineHeight)
 				.rounded(.down) - 1
 
-		return max(0, remainingLines * lineHeight)
+		return bottomInset + max(0, remainingLines * lineHeight)
 	}
 
 	var body: some View {
@@ -50,7 +77,7 @@ struct ListMessageView: View {
 		ScrollViewReader { proxy in
 			List {
 				ForEach(messages) { message in
-					MessageBubble(message: message)
+					MessageBubble(message: message, assistantText: assistantText)
 						.listRowBackground(Color.clear)
 						.listRowInsets(
 							EdgeInsets(
@@ -78,6 +105,16 @@ struct ListMessageView: View {
 						}
 				}
 				.listRowSeparator(.hidden)
+
+				// The row every scroll-to-bottom aims at. Scrolling to the last
+				// message instead would put it under the compose bar, which is
+				// what this row is holding space for.
+				Color.clear
+					.frame(height: bottomSpacerHeight)
+					.listRowBackground(Color.clear)
+					.listRowInsets(EdgeInsets())
+					.listRowSeparator(.hidden)
+					.id(Self.bottomSpacerID)
 			}
 			.listStyle(.plain)
 			.scrollContentBackground(.hidden)
@@ -132,6 +169,10 @@ struct ListMessageView: View {
 			}
 
 			.onChange(of: messages.count) {
+				stickToBottom(proxy)
+			}
+
+			.onChange(of: scrollToBottomToken) {
 				stickToBottom(proxy)
 			}
 

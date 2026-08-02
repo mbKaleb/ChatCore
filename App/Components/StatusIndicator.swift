@@ -96,6 +96,24 @@ struct StatusIndicator: View {
 	}
 }
 
+/// The light for a model that isn't in the catalog.
+///
+/// The alternative — substituting some other loaded model's descriptor — makes
+/// the light publish a verified, on-device, secure claim about a model that
+/// isn't there, which is the one thing this control must never do.
+@available(macOS 27.0, *)
+struct MissingModelIndicator: View {
+
+	let modelID: GenerativeChatModel.ID
+
+	var body: some View {
+		GlowDot(color: StatusLevel.failed.color, alive: false)
+			.frame(width: 24, height: 24)
+			.padding(6)
+			.help("\(ModelManagerError.readable(modelID)) isn't available right now.")
+	}
+}
+
 @available(macOS 26.0, *)
 private struct ModelInfoView: View {
 	let model: GenerativeChatModel

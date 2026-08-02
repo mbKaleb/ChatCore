@@ -38,14 +38,17 @@ struct HorizontalScrollBox<Content: View>: NSViewRepresentable {
 		scroll.verticalScrollElasticity = .none
 		scroll.horizontalScrollElasticity = .automatic
 
-		let host = NSHostingView(rootView: AnyView(content))
+		// Hosted as `Content`, not `AnyView`: a code block re-renders whenever its
+		// bubble does, and an erased root gives SwiftUI nothing to diff, so every
+		// one of those updates rebuilt the nested graph from scratch.
+		let host = NSHostingView(rootView: content)
 		scroll.documentView = host
 		return scroll
 	}
 
 	func updateNSView(_ scroll: PassthroughScrollView, context: Context) {
-		guard let host = scroll.documentView as? NSHostingView<AnyView> else { return }
-		host.rootView = AnyView(content)
+		guard let host = scroll.documentView as? NSHostingView<Content> else { return }
+		host.rootView = content
 		host.frame = CGRect(origin: .zero, size: host.fittingSize)
 	}
 
@@ -54,7 +57,7 @@ struct HorizontalScrollBox<Content: View>: NSViewRepresentable {
 		nsView: PassthroughScrollView,
 		context: Context
 	) -> CGSize? {
-		guard let host = nsView.documentView as? NSHostingView<AnyView> else { return nil }
+		guard let host = nsView.documentView as? NSHostingView<Content> else { return nil }
 		let fitting = host.fittingSize
 		return CGSize(
 			width: proposal.width ?? fitting.width,

@@ -37,64 +37,37 @@ extension FocusedValues {
 	}
 }
 
+/// The window.
+///
+/// Holds the model and hands it to the two columns through the environment,
+/// reading none of it itself. That is the point: a `$model.x` binding doesn't
+/// read `x`, so a write to `selectedIDs` or `focusInputOnNextChat` no longer
+/// re-runs this body and, with it, both toolbars. The bindings still deliver —
+/// `NavigationSplitView` tracks `columnVisibility` through the binding alone,
+/// verified by toggling with no read of it anywhere in this body.
 struct AppView: View {
 
 	@Environment(\.modelContext) private var modelContext
-	@Environment(ModelManager.self) private var manager
-	@Query(sort: \Conversation.createdAt, order: .reverse) var conversations: [Conversation]
-
-	@State private var selectedIDs: Set<UUID> = []
-	@State private var columnVisibility: NavigationSplitViewVisibility = .all
-
-	@State private var focusInputOnNextChat = false
-
 	@AppStorage(Defaults.Key.defaultModelID) private var defaultModelID = GenerativeChatModel.onDevice.id
 
-	@State private var promptICloudSignIn = false
-
-	@State private var lastSidebarToggle: ContinuousClock.Instant?
-
-	private static let sidebarToggleCooldown: Duration = .milliseconds(400)
-
-	private var sidebarOpen: Bool { columnVisibility != .detailOnly }
-
-	private var conversation: Conversation? {
-		guard selectedIDs.count == 1 else { return nil }
-		return conversations.first { selectedIDs.contains($0.id) }
-	}
-
-	private var displayedModelID: GenerativeChatModel.ID {
-		conversation?.modelID ?? defaultModelID
-	}
+	@State private var model = AppModel()
 
 	var body: some View {
 		let _ = Self.printChanges()
-		NavigationSplitView(columnVisibility: $columnVisibility) {
-			ConversationSidebar(selectedIDs: $selectedIDs, onNewConversation: newConversation)
+		@Bindable var model = model
+		NavigationSplitView(columnVisibility: $model.columnVisibility) {
+			ConversationSidebar(onNewConversation: newConversation)
 		} detail: {
-			ConversationDetail(
-				selectedIDs: selectedIDs,
-				conversation: conversation,
-				sidebarOpen: sidebarOpen,
-				focusInputOnAppear: $focusInputOnNextChat
-			)
+			ConversationDetail()
 				.scrollEdgeEffectHidden(true, for: .top)
-				.toolbar {
-					ToolbarItem(placement: .principal) {
-						ModelBadge(conversation: conversation, defaultModelID: $defaultModelID)
-					}
-
-					ToolbarItem(placement: .primaryAction) {
-						StatusIndicator(model: manager.model(withID: displayedModelID) ?? .onDevice)
-					}
-				}
 		}
+		.environment(model)
 		.task {
 			if FileManager.default.ubiquityIdentityToken == nil {
-				promptICloudSignIn = true
+				model.promptICloudSignIn = true
 			}
 		}
-		.alert("Sign in to iCloud", isPresented: $promptICloudSignIn) {
+		.alert("Sign in to iCloud", isPresented: $model.promptICloudSignIn) {
 			Button("Open System Settings") {
 				if let url = URL(string: "x-apple.systempreferences:com.apple.systempreferences.AppleIDSettings") {
 					NSWorkspace.shared.open(url)
@@ -105,30 +78,45 @@ struct AppView: View {
 			Text("Private Cloud needs your Apple Account. On-device chat works either way.")
 		}
 		.focusedSceneValue(\.newChat, newConversation)
-		.focusedSceneValue(\.toggleSidebar, toggleSidebar)
+		.focusedSceneValue(\.toggleSidebar, model.toggleSidebar)
+		.background { TextSizeShortcuts() }
 	}
 
-	func toggleSidebar() {
-		let now = ContinuousClock.now
-		if let last = lastSidebarToggle, now - last < Self.sidebarToggleCooldown { return }
-		lastSidebarToggle = now
-		columnVisibility = sidebarOpen ? .detailOnly : .all
+	private func newConversation() {
+		model.newConversation(in: modelContext, defaultModelID: defaultModelID)
 	}
+}
 
-	func newConversation() {
-		var config = Chat.default
-		config.modelID = defaultModelID
-		let convo = Conversation(config: config)
-		modelContext.insert(convo)
-		focusInputOnNextChat = true
-		selectedIDs = [convo.id]
+/// The unshifted half of ⌘+ / ⌘−.
+///
+/// The View menu carries the real items; their ⌘+ only matches the shifted key,
+/// which is what "+" is on most layouts. These invisible twins catch ⌘= and the
+/// numeric-keypad ⌘− so either press does the same thing, the way a browser
+/// behaves. Kept in its own view so the read of `fontSize` — which changes on
+/// every press — doesn't land in `AppView`'s body and rebuild the window.
+private struct TextSizeShortcuts: View {
+
+	@Environment(ThemeManager.self) private var themes
+
+	var body: some View {
+		ZStack {
+			Button("Increase Text Size") { themes.fontSize += 1 }
+				.keyboardShortcut("=", modifiers: .command)
+				.disabled(themes.fontSize >= ChatAppearance.fontSizeRange.upperBound)
+
+			Button("Decrease Text Size") { themes.fontSize -= 1 }
+				.keyboardShortcut("_", modifiers: .command)
+				.disabled(themes.fontSize <= ChatAppearance.fontSizeRange.lowerBound)
+		}
+		.opacity(0)
+		.accessibilityHidden(true)
 	}
 }
 
 // MARK: - Conversation Sidebar
 
 private struct ConversationSidebar: View {
-	@Binding var selectedIDs: Set<UUID>
+	@Environment(AppModel.self) private var model
 	var onNewConversation: () -> Void
 
 	@State private var searchText = ""
@@ -140,9 +128,10 @@ private struct ConversationSidebar: View {
 
 	var body: some View {
 		let _ = Self.printChanges()
+		@Bindable var model = model
 		ConversationList(
 			search: debouncedSearch,
-			selectedIDs: $selectedIDs,
+			selectedIDs: $model.selectedIDs,
 			focus: $focus,
 			onNewConversation: onNewConversation
 		)
@@ -397,20 +386,33 @@ private struct RowDoubleClickHandler: NSViewRepresentable {
 }
 
 // MARK: - Conversation Detail
+/// The detail column and the toolbar over it.
+///
+/// Reads `selectedIDs` and `selectedConversation` and nothing else. In
+/// particular it does *not* read `sidebarOpen`: that used to arrive as a stored
+/// property, so every sidebar toggle re-ran this body and rebuilt the `.toolbar`
+/// below it — SwiftUI re-issues an `NSToolbarItem` when its content changes
+/// identity, which is a visible swap. `ChatView` reads the sidebar state itself
+/// now, being the only thing that reacts to it.
 private struct ConversationDetail: View {
-	var selectedIDs: Set<UUID>
-	var conversation: Conversation?
-	var sidebarOpen: Bool
-	@Binding var focusInputOnAppear: Bool
+	@Environment(AppModel.self) private var model
+	@Environment(\.modelContext) private var modelContext
+
+	/// Read here rather than inside `ChatView`, which takes the renderer it is
+	/// told to use and leaves where that came from to its caller.
+	@AppStorage(Defaults.Key.transcriptRenderer) private var rendererID = TranscriptRenderer.default.rawValue
 
 	var body: some View {
 		let _ = Self.printChanges()
 		ZStack {
-			if selectedIDs.count > 1 {
-				Text("\(selectedIDs.count) conversations selected")
+			if model.selectedIDs.count > 1 {
+				Text("\(model.selectedIDs.count) conversations selected")
 					.foregroundStyle(.secondary)
-			} else if let conversation {
-				ChatView(conversation: conversation, sidebarOpen: sidebarOpen, focusInputOnAppear: $focusInputOnAppear)
+			} else if let conversation = model.selectedConversation {
+				ChatView(
+					conversation: conversation,
+					renderer: TranscriptRenderer(storedID: rendererID)
+				)
 			} else {
 				Text("Select or start a conversation")
 					.foregroundStyle(.secondary)
@@ -418,6 +420,41 @@ private struct ConversationDetail: View {
 		}
 		.frame(maxWidth: .infinity, maxHeight: .infinity)
 		.frame(minWidth: 480, minHeight: 360)
+		// Resolved here rather than one level up: this is the view that renders
+		// the result, so the read of `selectedIDs` it costs is one this body
+		// already owes. On `AppView` it was a dependency bought for nothing.
+		.onChange(of: model.selectedIDs, initial: true) {
+			model.resolveSelection(in: modelContext)
+		}
+		.toolbar {
+			ToolbarItem(placement: .principal) {
+				ModelBadge(conversation: model.selectedConversation)
+			}
+
+			ToolbarItem(placement: .primaryAction) {
+				StatusIndicatorItem(conversation: model.selectedConversation)
+			}
+		}
+	}
+}
+
+/// Resolves the model itself so the `chatModels` lookup doesn't make the
+/// enclosing detail body depend on `ModelManager.chatModels`, and reads the
+/// stored default for the same reason — `@AppStorage` is a view onto
+/// `UserDefaults`, not a value that has to be threaded down from the window.
+private struct StatusIndicatorItem: View {
+	@Environment(ModelManager.self) private var manager
+	@AppStorage(Defaults.Key.defaultModelID) private var defaultModelID = GenerativeChatModel.onDevice.id
+	var conversation: Conversation?
+
+	private var modelID: GenerativeChatModel.ID { conversation?.modelID ?? defaultModelID }
+
+	var body: some View {
+		if let model = manager.model(withID: modelID) {
+			StatusIndicator(model: model)
+		} else {
+			MissingModelIndicator(modelID: modelID)
+		}
 	}
 }
 
@@ -426,25 +463,46 @@ private struct ConversationDetail: View {
 private struct ModelBadge: View {
 
 	@Environment(ModelManager.self) private var manager
+	@AppStorage(Defaults.Key.defaultModelID) private var defaultModelID = GenerativeChatModel.onDevice.id
 	var conversation: Conversation?
-	@Binding var defaultModelID: String
 
 	@State private var showPicker = false
 
 	private var appleModels: [GenerativeChatModel] {
-		manager.chatModels.filter { $0.dataResidency != .cloud }
+		manager.enabledChatModels.filter { $0.dataResidency != .cloud }
 	}
 
-	private var otherModels: [GenerativeChatModel] {
-		manager.chatModels.filter { $0.dataResidency == .cloud }
+	private var cloudModels: [GenerativeChatModel] {
+		manager.enabledChatModels.filter { $0.dataResidency == .cloud }
+	}
+
+	/// The same split the Settings picker makes: a vendor serves its whole back
+	/// catalog, and all of it arriving in one list buries what it ships today.
+	/// Which half a model falls in comes from the manager, computed over the
+	/// whole catalog — asked of this already-filtered list, the answer would be
+	/// about the list rather than about what the vendor ships.
+	private var currentModels: [GenerativeChatModel] {
+		cloudModels.filter { !manager.supersededModelIDs.contains($0.id) }
+	}
+
+	/// Newest first, so the version a user is coming back from leads.
+	private var olderModels: [GenerativeChatModel] {
+		cloudModels
+			.filter { manager.supersededModelIDs.contains($0.id) }
+			.sorted { lhs, rhs in
+				guard let left = lhs.release, let right = rhs.release else { return false }
+				return right < left
+			}
 	}
 
 	private var displayedModelID: GenerativeChatModel.ID {
 		conversation?.modelID ?? defaultModelID
 	}
 
+	/// The id is a namespaced key, not a name — it doesn't fit the badge and
+	/// doesn't read as one. When the model is gone, say that instead.
 	private var badgeModelName: String {
-		manager.model(withID: displayedModelID)?.displayName ?? displayedModelID
+		manager.model(withID: displayedModelID)?.displayName ?? "Unavailable"
 	}
 
 	private var isDefaultForNewChats: Binding<Bool> {
@@ -479,13 +537,17 @@ private struct ModelBadge: View {
 			.lineLimit(2)
 			.frame(width: 160, height: 36)
 			.clipped()
+			// A plain button only hit-tests the glyphs it draws, so without this
+			// the empty space around a short model name swallows the click.
+			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
 		.fixedSize()
 		.popover(isPresented: $showPicker, arrowEdge: .bottom) {
 			ModelPickerPopover(
 				appleModels: appleModels,
-				otherModels: otherModels,
+				currentModels: currentModels,
+				olderModels: olderModels,
 				displayedModelID: displayedModelID,
 				showsDefaultToggle: conversation != nil,
 				isDefaultForNewChats: isDefaultForNewChats,
@@ -498,12 +560,18 @@ private struct ModelBadge: View {
 
 private struct ModelPickerPopover: View {
 	var appleModels: [GenerativeChatModel]
-	var otherModels: [GenerativeChatModel]
+	var currentModels: [GenerativeChatModel]
+	var olderModels: [GenerativeChatModel]
 	var displayedModelID: GenerativeChatModel.ID
 	var showsDefaultToggle: Bool
 	var isDefaultForNewChats: Binding<Bool>
 	var capabilities: (GenerativeChatModel) -> ModelCapabilities
 	var onSelect: (GenerativeChatModel) -> Void
+
+	/// Collapsed unless the chat is already on one of them — a popover is a
+	/// pick-and-go, and the back catalog is longer than the part anyone reads.
+	/// Nothing persists it: the next one opens on what's current again.
+	@State private var showsOlder = false
 
 	private let horizontalPadding: CGFloat = 14
 	private let rowIndent: CGFloat = 14 + 16 + 6
@@ -513,9 +581,17 @@ private struct ModelPickerPopover: View {
 		VStack(alignment: .leading, spacing: 0) {
 			section(icon: Image(systemName: "apple.intelligence"), title: "Apple", models: appleModels)
 
-			if !otherModels.isEmpty {
+			if !currentModels.isEmpty || !olderModels.isEmpty {
 				Divider().padding(.vertical, 4)
-				section(icon: Image("ClaudeIcon").resizable().scaledToFit(), title: "Claude", models: otherModels)
+				section(icon: Image("ClaudeIcon").resizable().scaledToFit(), title: "Claude", models: currentModels)
+			}
+
+			if !olderModels.isEmpty {
+				olderHeader
+
+				if showsOlder {
+					ForEach(olderModels, content: row)
+				}
 			}
 
 			if showsDefaultToggle {
@@ -529,6 +605,36 @@ private struct ModelPickerPopover: View {
 		.frame(width: 240)
 		.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20))
 		.presentationBackground(.clear)
+		// A chat left on a retired version has to be able to see itself, and the
+		// group it lives in is closed by default.
+		.onAppear {
+			showsOlder = olderModels.contains { $0.id == displayedModelID }
+		}
+	}
+
+	/// The one header in the popover that's also a control — the group under it
+	/// is the only one that opens.
+	private var olderHeader: some View {
+		Button {
+			withAnimation(.snappy(duration: 0.15)) { showsOlder.toggle() }
+		} label: {
+			HStack(spacing: 6) {
+				Image(systemName: "chevron.right")
+					.font(.caption2)
+					.rotationEffect(.degrees(showsOlder ? 90 : 0))
+					.frame(width: 16, height: 16)
+				Text("Other Models")
+					.font(.caption)
+					.fontWeight(.medium)
+				Spacer(minLength: 0)
+			}
+			.foregroundStyle(.secondary)
+			.padding(.horizontal, horizontalPadding)
+			.padding(.top, 6)
+			.padding(.bottom, 2)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
 	}
 
 	@ViewBuilder

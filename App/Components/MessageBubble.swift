@@ -19,7 +19,7 @@ enum ChatBubbleMetrics {
 	static let assistantColumnPadding: CGFloat = 4
 
 	/// The gutter the bubble can never grow into, opposite its own edge.
-	static let trailingGutter: CGFloat = 5
+	static let trailingGutter: CGFloat = 12
 
 	/// Vertical gap between the attachment chips and the text.
 	static let attachmentSpacing: CGFloat = 8
@@ -40,8 +40,23 @@ enum ChatBubbleMetrics {
 	}
 }
 
+/// Which component draws assistant markdown inside a bubble.
+///
+/// The TextKit 2 paths make selection flow across the whole message; MarkdownUI
+/// is the reference look. `selectable2` is a fork of `selectable` that carries
+/// experiments — currently fast LaTeX — without destabilising it.
+enum AssistantTextEngine {
+	case markdownUI
+	case selectable
+	case selectable2
+}
+
 struct MessageBubble: View {
 	let message: Message
+
+	/// Which text container draws assistant markdown. Only the `selectable`
+	/// transcript renderers move this off `markdownUI`.
+	var assistantText: AssistantTextEngine = .markdownUI
 
 	@Environment(ModelManager.self) private var manager
 	@Environment(ThemeManager.self) private var themes
@@ -138,6 +153,26 @@ struct MessageBubble: View {
 					fontSize: a.fontSize,
 					lineSpacing: a.lineSpacing,
 					color: t.bodyText
+				)
+			} else if assistantText == .selectable {
+				// Same preprocessing MarkdownContentCache applies, so the two
+				// renderers are being handed identical source.
+				SelectableMarkdownView(
+					markdown: SoftBreakMarkdown.preserveLineBreaks(
+						a.rendersMath ? MathMarkdown.preprocess(displayText) : displayText
+					),
+					style: SelectableStyleCache.resolved(t, a)
+				)
+			} else if assistantText == .selectable2 {
+				// `inlineMath` is the one preprocessing difference from the other
+				// renderers: this is the only one that draws `$…$`.
+				SelectableMarkdownView2(
+					markdown: SoftBreakMarkdown.preserveLineBreaks(
+						a.rendersMath
+							? MathMarkdown.preprocess(displayText, inlineMath: true)
+							: displayText
+					),
+					style: Selectable2StyleCache.resolved(t, a)
 				)
 			} else {
 				Markdown(

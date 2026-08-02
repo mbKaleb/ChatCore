@@ -37,7 +37,7 @@ struct ClaudeBackend: ChatBackend {
 	let logoName = "ClaudeLogo"
 
 	private var apiKey: String? {
-		if let stored = KeychainStore.read(KeychainStore.anthropicAPIKeyRef), !stored.isEmpty {
+		if let stored = KeychainStore.read(ModelVendor.anthropic.keychainRef), !stored.isEmpty {
 			return stored
 		}
 		if let env = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"], !env.isEmpty {

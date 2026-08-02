@@ -87,6 +87,17 @@ nonisolated struct ChatOptions: Sendable {
 	var temperature: Double = 1.0
 	var maxResponseTokens: Int? = nil
 
+	/// Which conversation this send belongs to, when it belongs to one.
+	///
+	/// A backend that keeps per-conversation state keys it on this. It rides in
+	/// the options rather than the protocol because a stateless HTTP backend
+	/// should be free to ignore it, and it's a bare UUID rather than the
+	/// conversation because nothing below the seam sees SwiftData.
+	///
+	/// Nil means a one-shot with no conversation behind it — a title, a summary
+	/// — which must leave no trace in any chat's history.
+	var sessionKey: UUID? = nil
+
 	static let `default` = ChatOptions()
 }
 

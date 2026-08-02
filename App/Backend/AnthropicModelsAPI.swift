@@ -8,10 +8,6 @@ import ClaudeForFoundationModels
 
 // MARK: - Wire Types
 
-/// One entry from `GET /v1/models`.
-///
-/// The vendor is the authority on what it serves, so the app asks rather than
-/// hardcoding a list that silently rots the week a model ships or retires.
 nonisolated struct AnthropicModelEntry: Decodable, Sendable {
 
 	var id: String
@@ -25,11 +21,7 @@ nonisolated struct AnthropicModelEntry: Decodable, Sendable {
 		case maxInputTokens = "max_input_tokens"
 		case capabilities
 	}
-
-	/// The capability tree, decoded leniently: every node is optional and a
-	/// missing one reads as unsupported. A field the API adds later can't break
-	/// decoding, and a field it drops degrades to "don't send it" — the safe
-	/// direction, since sending a field a model rejects is a hard 400.
+	
 	nonisolated struct Capabilities: Decodable, Sendable {
 
 		struct Flag: Decodable, Sendable {
@@ -82,8 +74,6 @@ private nonisolated struct AnthropicModelsPage: Decodable, Sendable {
 
 nonisolated enum AnthropicModelsAPI {
 
-	/// Pages are followed rather than assumed away — the endpoint is a cursor
-	/// list, and a single page is a coincidence of today's catalog size.
 	static func models(apiKey: String) async throws -> [AnthropicModelEntry] {
 		var entries: [AnthropicModelEntry] = []
 		var afterID: String?
@@ -98,19 +88,18 @@ nonisolated enum AnthropicModelsAPI {
 			}
 			components.queryItems = query
 
+			try Task.checkCancellation()
+
 			var request = URLRequest(url: components.url!)
 			request.httpMethod = "GET"
 			request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
 			request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+			// URLSession's default is 60s per request, and this loop can make
+			// ten of them — a wedged route shouldn't be able to hold a refresh
+			// open for ten minutes.
+			request.timeoutInterval = 15
 
-			let (data, response) = try await URLSession.shared.data(for: request)
-			guard let http = response as? HTTPURLResponse else {
-				throw AnthropicModelsError.badResponse
-			}
-			guard http.statusCode == 200 else {
-				throw AnthropicModelsError.status(http.statusCode)
-			}
-
+			let data = try await send(request)
 			let page = try JSONDecoder().decode(AnthropicModelsPage.self, from: data)
 			entries.append(contentsOf: page.data)
 
@@ -120,19 +109,90 @@ nonisolated enum AnthropicModelsAPI {
 
 		return entries
 	}
+
+	/// One request, retried while the failure still looks like weather.
+	///
+	/// A rejected key and an overloaded server both arrive as "no models", but
+	/// only one of them is worth asking again about — and with no built-in
+	/// model list behind it, giving up on a 529 costs the user their whole
+	/// catalog until the next activation happens to succeed.
+	private static func send(_ request: URLRequest) async throws -> Data {
+		let attempts = 3
+
+		for attempt in 1...attempts {
+			do {
+				let (data, response) = try await URLSession.shared.data(for: request)
+				guard let http = response as? HTTPURLResponse else {
+					throw AnthropicModelsError.badResponse
+				}
+				if http.statusCode == 200 { return data }
+
+				let error = AnthropicModelsError.status(http.statusCode)
+				guard error.isTransient, attempt < attempts else { throw error }
+
+				// The server's own pacing wins when it states one; otherwise
+				// back off so a retry doesn't land in the same overload.
+				let advised = (http.value(forHTTPHeaderField: "Retry-After")).flatMap(TimeInterval.init)
+				try await Task.sleep(for: .seconds(advised ?? pow(2, Double(attempt - 1))))
+			} catch let error as URLError {
+				guard Self.isTransient(error), attempt < attempts else { throw error }
+				try await Task.sleep(for: .seconds(pow(2, Double(attempt - 1))))
+			}
+		}
+
+		throw AnthropicModelsError.badResponse
+	}
+
+	private static func isTransient(_ error: URLError) -> Bool {
+		switch error.code {
+		case .timedOut, .networkConnectionLost, .cannotConnectToHost,
+		     .dnsLookupFailed, .cannotFindHost, .notConnectedToInternet:
+			return true
+		default:
+			return false
+		}
+	}
 }
 
 nonisolated enum AnthropicModelsError: Error {
 	case badResponse
 	case status(Int)
+
+	/// Whether asking again could plausibly get a different answer. A key the
+	/// server rejected will be rejected just as fast three times in a row.
+	var isTransient: Bool {
+		switch self {
+		case .badResponse:
+			return false
+		case .status(let code):
+			return code == 408 || code == 409 || code == 429 || (500...599).contains(code)
+		}
+	}
+}
+
+extension AnthropicModelsError: LocalizedError {
+
+	var errorDescription: String? {
+		switch self {
+		case .badResponse:
+			"Couldn't read Anthropic's reply."
+		case .status(401), .status(403):
+			"Anthropic rejected the API key."
+		case .status(429):
+			"Anthropic is rate limiting this key."
+		case .status(let code) where (500...599).contains(code):
+			"Anthropic is unavailable right now."
+		case .status(let code):
+			"Anthropic returned an error (\(code))."
+		}
+	}
 }
 
 // MARK: - Mapping
 
 nonisolated extension AnthropicModelEntry {
 
-	/// Namespaced so a vendor id can't collide with Apple's, and so persisted
-	/// conversations keep pointing at the same model across launches.
+	/// Namespaced so a vendor id can't collide with Apples
 	static let idPrefix = "vendor.anthropic."
 
 	var namespacedID: GenerativeChatModel.ID { Self.idPrefix + id }

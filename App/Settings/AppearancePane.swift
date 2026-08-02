@@ -9,7 +9,6 @@ import MarkdownUI
 struct AppearancePane: View {
 
 	@Environment(ThemeManager.self) private var themes
-	@AppStorage(Defaults.Key.streamingMode) private var streamingModeRaw = StreamingMode.token.rawValue
 
 	var body: some View {
 		@Bindable var themes = themes
@@ -43,7 +42,7 @@ struct AppearancePane: View {
 						max: "text.justify"
 					)
 				} header: {
-					sectionHeader("Body text", "The prose in every message, yours and the model's.")
+					settingsSectionHeader("Body text", "The prose in every message, yours and the model's.")
 				} footer: {
 					sampleFooter { sample(t, a, Self.bodyContent) }
 				}
@@ -61,7 +60,7 @@ struct AppearancePane: View {
 						note: "How much larger headings are than body text. All six levels scale together."
 					)
 				} header: {
-					sectionHeader("Headings", "Section titles the model uses to break up a long reply.")
+					settingsSectionHeader("Headings", "Section titles the model uses to break up a long reply.")
 				} footer: {
 					sampleFooter { sample(t, a, Self.headingContent) }
 				}
@@ -79,7 +78,7 @@ struct AppearancePane: View {
 						note: "Set in points, not relative — monospaced text reads larger than prose at the same size."
 					)
 				} header: {
-					sectionHeader("Code", "Inline spans and fenced blocks.")
+					settingsSectionHeader("Code", "Inline spans and fenced blocks.")
 				} footer: {
 					sampleFooter { sample(t, a, Self.codeContent) }
 				}
@@ -106,7 +105,7 @@ struct AppearancePane: View {
 					.disabled(!a.rendersMath)
 					.opacity(a.rendersMath ? 1 : 0.4)
 				} header: {
-					sectionHeader("Equations", "Display math written as $$…$$ or \\[…\\].")
+					settingsSectionHeader("Equations", "Display math written as $$…$$ or \\[…\\].")
 				} footer: {
 					sampleFooter {
 						sample(t, a, a.rendersMath ? Self.equationContentRendered : Self.equationContentLiteral)
@@ -129,23 +128,9 @@ struct AppearancePane: View {
 						Text("Striped rows")
 					}
 				} header: {
-					sectionHeader("Tables", "Grids of rows and columns.")
+					settingsSectionHeader("Tables", "Grids of rows and columns.")
 				} footer: {
 					sampleFooter { sample(t, a, Self.tableContent) }
-				}
-
-				Section {
-					Picker("", selection: $streamingModeRaw) {
-						ForEach(StreamingMode.allCases) { mode in
-							Text(mode.displayName).tag(mode.rawValue)
-						}
-					}
-					.pickerStyle(.radioGroup)
-					.labelsHidden()
-				} header: {
-					sectionHeader("Streaming", "How a reply is drawn while it's still arriving.")
-				} footer: {
-					footerText(StreamingMode(rawValue: streamingModeRaw)?.summary ?? "")
 				}
 
 				Section {
@@ -162,32 +147,17 @@ struct AppearancePane: View {
 
 	// MARK: - Section chrome
 
-	private func sectionHeader(_ title: String, _ subtitle: String) -> some View {
-		VStack(alignment: .leading, spacing: 2) {
-			Text(title)
-			Text(subtitle)
-				.font(.caption)
-				.foregroundStyle(.secondary)
-				.fixedSize(horizontal: false, vertical: true)
-		}
-	}
-
 	private func sampleFooter(
 		_ note: String? = nil,
 		@ViewBuilder sample: () -> some View
 	) -> some View {
 		VStack(alignment: .leading, spacing: 8) {
 			if let note {
-				footerText(note)
+				settingsFooterText(note)
 			}
 			sample()
 		}
 		.frame(maxWidth: .infinity, alignment: .leading)
-	}
-
-	private func footerText(_ text: String) -> some View {
-		Text(text)
-			.fixedSize(horizontal: false, vertical: true)
 	}
 
 	private func caption(_ text: String) -> some View {

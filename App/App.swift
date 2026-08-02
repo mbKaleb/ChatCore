@@ -51,18 +51,23 @@ struct ChatCore: App {
 		.modelContainer(sharedModelContainer)
 		.environment(modelManager)
 		.environment(themeManager)
-		.commands { ChatCommands() }
+		.commands { ChatCommands(themes: themeManager) }
 
 		Settings {
 			SettingsView()
 				.environment(modelManager)
 				.environment(themeManager)
-		.environment(themeManager)
 		}
+		// A Settings scene defaults to `.contentSize`, which pins the window
+		// to whatever the panes ask for. Only the minimum is binding here;
+		// the ceiling is the screen.
+		.windowResizability(.contentMinSize)
 	}
 }
 
 private struct ChatCommands: Commands {
+	let themes: ThemeManager
+
 	@FocusedValue(\.newChat) private var newChat
 	@FocusedValue(\.toggleSidebar) private var toggleSidebar
 	@FocusedValue(\.findChat) private var findChat
@@ -80,6 +85,25 @@ private struct ChatCommands: Commands {
 			Button("Toggle Sidebar") { toggleSidebar?() }
 				.keyboardShortcut("b", modifiers: .command)
 				.disabled(toggleSidebar == nil)
+		}
+
+		// The same "Text size" the Appearance pane sets, stepped a point at a
+		// time. `ThemeManager` clamps to `fontSizeRange`, so the buttons only
+		// need to stop offering a step that would do nothing.
+		CommandGroup(after: .toolbar) {
+			Divider()
+
+			Button("Increase Text Size") { themes.fontSize += 1 }
+				.keyboardShortcut("+", modifiers: .command)
+				.disabled(themes.fontSize >= ChatAppearance.fontSizeRange.upperBound)
+
+			Button("Decrease Text Size") { themes.fontSize -= 1 }
+				.keyboardShortcut("-", modifiers: .command)
+				.disabled(themes.fontSize <= ChatAppearance.fontSizeRange.lowerBound)
+
+			Button("Actual Size") { themes.fontSize = ChatAppearance.default.fontSize }
+				.keyboardShortcut("0", modifiers: .command)
+				.disabled(themes.fontSize == ChatAppearance.default.fontSize)
 		}
 
 		CommandGroup(replacing: .newItem) {

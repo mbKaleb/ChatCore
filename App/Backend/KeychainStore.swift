@@ -6,9 +6,12 @@
 import Foundation
 import Security
 
+/// Secrets, keyed by a ref the caller owns.
+///
+/// The refs themselves belong to whoever the secret is about — `ModelVendor`
+/// derives one per vendor — so there is no list of accounts here to fall out of
+/// step with the list of vendors.
 nonisolated enum KeychainStore {
-
-	static let anthropicAPIKeyRef = "anthropic.api-key"
 
 	private static let service = "com.franken.ChatCore"
 

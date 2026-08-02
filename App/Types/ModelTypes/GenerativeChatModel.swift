@@ -43,11 +43,28 @@ struct ModelIconView: View {
 				.font(.system(size: size))
 				.frame(width: size, height: size)
 		case .asset(let name):
-			Image(name)
+			assetImage(name)
 				.resizable()
 				.scaledToFit()
 				.frame(width: size, height: size)
 		}
+	}
+
+	/// Asset icons have to carry their size in the image itself, not just in a
+	/// `.frame`. A `Picker` row that becomes the collapsed menu label is handed
+	/// to AppKit, which takes the `NSImage` and draws it at its natural size —
+	/// the SwiftUI sizing modifiers around it are gone by then, so a full-size
+	/// vendor mark renders enormous. Stamping the size onto the `NSImage`
+	/// survives that trip; elsewhere the modifiers above still do the work.
+	private func assetImage(_ name: String) -> Image {
+		#if os(macOS)
+		if let image = NSImage(named: name) {
+			let sized = image.copy() as! NSImage
+			sized.size = NSSize(width: size, height: size)
+			return Image(nsImage: sized)
+		}
+		#endif
+		return Image(name)
 	}
 }
 

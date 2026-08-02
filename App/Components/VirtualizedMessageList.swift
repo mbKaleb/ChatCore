@@ -8,13 +8,22 @@ import AppKit
 
 // MARK: - SwiftUI entry point
 
-struct VirtualizedMessageList: View {
+struct VirtualizedMessageList: TranscriptRendering {
 	@Environment(ModelManager.self) private var manager
 	@Environment(ThemeManager.self) private var themes
 	var messages: [Message]
 	@Binding var scrollOffsetFromBottom: Double
 	var scrollToBottomToken: Int = 0
 	var bottomInset: CGFloat = 0
+
+	/// `conversationID` goes unused: nothing here outlives the view, so there is
+	/// no cache for it to name. Switching chats is a `reloadData` either way.
+	init(_ context: TranscriptContext) {
+		self.messages = context.messages
+		self._scrollOffsetFromBottom = context.scrollOffsetFromBottom
+		self.scrollToBottomToken = context.scrollToBottomToken
+		self.bottomInset = context.bottomInset
+	}
 
 	var body: some View {
 		MessageTableView(
@@ -50,6 +59,7 @@ private struct MessageTableView: NSViewControllerRepresentable {
 		let vc = MessageListViewController(
 			manager: manager,
 			themes: themes,
+			appearance: appearance,
 			initialOffsetFromBottom: CGFloat(initialOffsetFromBottom),
 			bottomInset: bottomInset
 		)
@@ -63,7 +73,7 @@ private struct MessageTableView: NSViewControllerRepresentable {
 	func updateNSViewController(_ vc: MessageListViewController, context: Context) {
 		if context.coordinator.lastAppearance != appearance {
 			context.coordinator.lastAppearance = appearance
-			vc.invalidateAllHeights()
+			vc.updateAppearance(appearance)
 		}
 		vc.updateBottomInset(bottomInset)
 		let forced = context.coordinator.consumeScrollRequest(scrollToBottomToken)
@@ -90,20 +100,71 @@ private struct MessageTableView: NSViewControllerRepresentable {
 	}
 }
 
+// MARK: - Row geometry
+
+/// The gap between a bubble and the edges of its row.
+///
+/// Read by the row's own view and by the estimator that has to predict the row's
+/// height before that view exists, so the two can't drift apart.
+private enum RowInsets {
+	static let leading: CGFloat = 16
+	static let trailing: CGFloat = 26
+	static let vertical: CGFloat = 6
+}
+
+// MARK: - Row root
+
+/// The root SwiftUI view of a row, hosted by the display cell and by the
+/// offscreen measurer alike.
+///
+/// A concrete type rather than an `AnyView`: handing a hosting view a fresh
+/// `AnyView` leaves SwiftUI nothing to diff against, so every cell coming back
+/// off the reuse queue rebuilt its whole subtree instead of updating it. The
+/// `.id(message.id)` stays on the inside — that is what resets `MessageBubble`'s
+/// hover and copied state when a recycled cell takes a different message.
+private struct BubbleRoot: View {
+	var message: Message?
+	var manager: ModelManager
+	var themes: ThemeManager
+
+	/// Set only by the measurer, which has to pin a width before it can ask for
+	/// a fitting height. A cell takes its width from the column instead.
+	var width: CGFloat?
+
+	var body: some View {
+		if let message {
+			MessageBubble(message: message)
+				.id(message.id)
+				.padding(.leading, RowInsets.leading)
+				.padding(.trailing, RowInsets.trailing)
+				.padding(.vertical, RowInsets.vertical)
+				.textSelection(.enabled)
+				.environment(manager)
+				.environment(themes)
+				.frame(width: width)
+		}
+	}
+}
+
 // MARK: - Controller
 
 @MainActor
 final class MessageListViewController: NSViewController {
 
 	private let bottomThreshold: CGFloat = 80
-	private let rowInsetLeading: CGFloat = 16
-	private let rowInsetTrailing: CGFloat = 26
-	private let rowInsetVertical: CGFloat = 6
 	private static let cellID = NSUserInterfaceItemIdentifier("BubbleCell")
 
 	private let manager: ModelManager
 	private let themes: ThemeManager
 	private let initialOffsetFromBottom: CGFloat
+
+	/// The appearance the cached heights were measured against.
+	///
+	/// Held here rather than read from `ThemeManager` where it's needed:
+	/// `appearance` is a computed property that rebuilds itself out of four font
+	/// catalog scans, and `estimatedHeight` runs once per row on every full
+	/// height pass.
+	private var appearance: ChatAppearance
 
 	private var bottomInset: CGFloat
 
@@ -122,7 +183,15 @@ final class MessageListViewController: NSViewController {
 	}
 	private var heightCache: [UUID: HeightEntry] = [:]
 
-	private let measureHost = NSHostingView(rootView: AnyView(EmptyView()))
+	/// `MathMarkdown.preprocess` rewritten per message, kept for as long as the
+	/// message text stands still. The estimator needs the rewritten form to walk
+	/// it, and it runs for every row on every full height pass.
+	private var estimateSourceCache: [UUID: (raw: String, source: String)] = [:]
+
+	/// Kept for the life of the controller and re-pointed at each row it measures,
+	/// so SwiftUI updates one graph rather than building and discarding one per
+	/// measurement.
+	private let measureHost: NSHostingView<BubbleRoot>
 
 	private var scrollView: NSScrollView!
 	private var tableView: NSTableView!
@@ -142,31 +211,77 @@ final class MessageListViewController: NSViewController {
 
 	private var isAnimatingScroll = false
 
+	/// Set across our own writes to the clip origin, so the bounds observer can
+	/// tell a move we made from one the user's gesture made.
+	private var isWritingClipOrigin = false
+
 	private var isLiveScrolling = false
+
+	/// When the clip origin last moved on its own — i.e. not from a write of ours.
+	///
+	/// Momentum has no notification to observe and `NSApp.currentEvent` is only
+	/// the event *being dispatched*, so reading it from a timer callback — which
+	/// is exactly where the deferral asks — sees whatever event happened to run
+	/// last, not the momentum still in flight. The origin moving is the one
+	/// signal that is true for the whole of a momentum phase.
+	private var lastPassiveOriginMoveAt: TimeInterval = 0
+
+	/// How long after the last unattributed origin move to keep treating the
+	/// scroll as in flight. Momentum posts bounds changes every frame, so one
+	/// missed frame at 60Hz is well inside this.
+	private static let momentumIdleWindow: TimeInterval = 0.12
+
+	private var isInMomentum: Bool {
+		CACurrentMediaTime() - lastPassiveOriginMoveAt < Self.momentumIdleWindow
+	}
 
 	private var scrollPhase: ScrollPhase {
 		if isAnimatingScroll { return .animating }
 		if isLiveScrolling { return .live }
-		if let e = NSApp.currentEvent, e.type == .scrollWheel, !e.momentumPhase.isEmpty {
-			return .momentum
-		}
+		if isInMomentum { return .momentum }
 		return .idle
+	}
+
+	/// Whether the user is driving the scroll right now, by hand or by momentum.
+	///
+	/// These are the phases where a write to the clip origin is a fight: AppKit
+	/// recomputes the origin from the gesture on the next event and whatever we
+	/// wrote is gone by the time it would have been drawn.
+	private var isScrolling: Bool {
+		let phase = scrollPhase
+		return phase == .live || phase == .momentum
 	}
 
 	nonisolated(unsafe) private var boundsObserver: NSObjectProtocol?
 	nonisolated(unsafe) private var liveScrollObserver: NSObjectProtocol?
 	nonisolated(unsafe) private var endLiveScrollObserver: NSObjectProtocol?
 
-	init(manager: ModelManager, themes: ThemeManager, initialOffsetFromBottom: CGFloat, bottomInset: CGFloat) {
+	init(
+		manager: ModelManager,
+		themes: ThemeManager,
+		appearance: ChatAppearance,
+		initialOffsetFromBottom: CGFloat,
+		bottomInset: CGFloat
+	) {
 		self.manager = manager
 		self.themes = themes
+		self.appearance = appearance
 		self.initialOffsetFromBottom = initialOffsetFromBottom
 		self.bottomInset = bottomInset
+		self.measureHost = NSHostingView(
+			rootView: BubbleRoot(message: nil, manager: manager, themes: themes)
+		)
 		super.init(nibName: nil, bundle: nil)
 	}
 
 	@available(*, unavailable)
 	required init?(coder: NSCoder) { fatalError() }
+
+	func updateAppearance(_ new: ChatAppearance) {
+		guard new != appearance else { return }
+		appearance = new
+		invalidateAllHeights()
+	}
 
 	deinit {
 		if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
@@ -224,8 +339,13 @@ final class MessageListViewController: NSViewController {
 		) { [weak self] _ in
 			MainActor.assumeIsolated {
 				guard let self else { return }
+				if !self.isWritingClipOrigin, !self.isAnimatingScroll {
+					self.lastPassiveOriginMoveAt = CACurrentMediaTime()
+				}
 				self.updateDistanceFromBottom()
-				ListMetrics.observedOrigin(self.clip.bounds.origin.y, phase: self.scrollPhase)
+				if ListMetrics.enabled {
+					ListMetrics.observedOrigin(self.clip.bounds.origin.y, phase: self.scrollPhase)
+				}
 				if self.isAnimatingScroll {
 					self.scrollView.reflectScrolledClipView(self.clip)
 				}
@@ -250,6 +370,14 @@ final class MessageListViewController: NSViewController {
 			MainActor.assumeIsolated {
 				guard let self else { return }
 				self.isLiveScrolling = false
+				// This fires when the fingers lift, which on a flick is the moment
+				// *before* momentum starts, not after it ends. Go through the
+				// deferral so a momentum phase gets a chance to declare itself —
+				// flushing straight into it put a full SwiftUI layout of every
+				// visible bubble on the first frames of the coast.
+				if !self.pendingCorrections.isEmpty {
+					self.deferHeightCorrections(IndexSet())
+				}
 				ListMetrics.summarize()
 			}
 		}
@@ -336,7 +464,9 @@ final class MessageListViewController: NSViewController {
 		messages = new
 		liveText = newLive
 		heightCache.removeAll()
+		estimateSourceCache.removeAll()
 		lastStreamingMeasureAt.removeAll()
+		pendingCorrections = IndexSet()
 		tableView.reloadData()
 
 		// `reloadData` just discarded every exact height, and `estimatedHeight`
@@ -393,10 +523,12 @@ final class MessageListViewController: NSViewController {
 		let m = messages[row]
 		let w = columnWidth
 		guard w > 0 else { return estimatedHeight(m, width: w) }
-		measureHost.rootView = AnyView(rootView(for: m).frame(width: w))
+		measureHost.rootView = rootView(for: m, width: w)
 		measureHost.layoutSubtreeIfNeeded()
 		let h = measureHost.fittingSize.height
-		measureHost.rootView = AnyView(EmptyView())
+		// Deliberately left holding the last bubble measured. Swapping in an
+		// empty root afterwards tore the graph down a second time for nothing —
+		// the next measurement re-points it either way.
 		heightCache[m.id] = HeightEntry(width: w, text: effectiveText(m), mode: renderMode(m), height: h)
 		return h
 	}
@@ -425,22 +557,22 @@ final class MessageListViewController: NSViewController {
 	private func estimatedHeight(_ m: Message, width: CGFloat) -> CGFloat {
 		let text = effectiveText(m)
 		guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-			return m.attachments.isEmpty ? 1 : chipRowHeight + 2 * rowInsetVertical
+			return m.attachments.isEmpty ? 1 : chipRowHeight + 2 * RowInsets.vertical
 		}
 
-		let a = themes.appearance
+		let a = appearance
 		let isAssistant = m.role != "user"
 
 		let usable = max(
 			40,
 			width
-				- rowInsetLeading
-				- rowInsetTrailing
+				- RowInsets.leading
+				- RowInsets.trailing
 				- 2 * ChatBubbleMetrics.horizontalPadding(assistant: isAssistant)
 				- ChatBubbleMetrics.trailingGutter
 		)
 
-		var height = 2 * rowInsetVertical
+		var height = 2 * RowInsets.vertical
 			+ 2 * ChatBubbleMetrics.verticalPadding(assistant: isAssistant)
 			+ ChatBubbleMetrics.copyButtonHeight
 			+ (isAssistant ? 2 * ChatBubbleMetrics.assistantColumnPadding : 0)
@@ -472,7 +604,7 @@ final class MessageListViewController: NSViewController {
 
 		// The renderer folds `$$…$$` into a fenced `math` block before parsing,
 		// so walking the same rewrite means one state machine covers both.
-		let source = a.rendersMath ? MathMarkdown.preprocess(text) : text
+		let source = estimateSource(for: m, text: text, rendersMath: a.rendersMath)
 
 		// Block margins collapse the way CSS margins do — adjacent blocks are
 		// separated by the larger of the two, not their sum — and the last block
@@ -589,6 +721,20 @@ final class MessageListViewController: NSViewController {
 		return height
 	}
 
+	/// The text `estimatedHeight` walks, with `$$…$$` already folded into fenced
+	/// math blocks.
+	///
+	/// The rewrite is over the whole message and the estimate runs per row, so
+	/// the result is held until the message text moves. A streaming row misses
+	/// every flush by definition; every other row hits.
+	private func estimateSource(for m: Message, text: String, rendersMath: Bool) -> String {
+		guard rendersMath else { return text }
+		if let cached = estimateSourceCache[m.id], cached.raw == text { return cached.source }
+		let source = MathMarkdown.preprocess(text)
+		estimateSourceCache[m.id] = (text, source)
+		return source
+	}
+
 	// MARK: Estimation constants
 
 	/// Line box as a multiple of point size.
@@ -668,6 +814,19 @@ final class MessageListViewController: NSViewController {
 		guard row >= 0, row < messages.count else { return }
 		let m = messages[row]
 		if hasExactHeight(m) { return }
+
+		// Nothing about a row's height gets touched while a gesture is in flight.
+		// Measuring is a full SwiftUI layout of the bubble, and every row crossing
+		// the prepared rect wants one — that cost lands on the scroll's critical
+		// path. Landing the result is worse: a noted height changes the document
+		// height, and a document height that moves under a live scroll makes the
+		// scroll view recompute its content size on every frame of the gesture,
+		// which drags the toolbar's scroll edge effect along with it.
+		guard !isScrolling else {
+			deferHeightCorrections(IndexSet(integer: row))
+			return
+		}
+
 		let used = height(for: row)
 		let exact = measureExact(row: row)
 		if ListMetrics.enabled {
@@ -696,17 +855,73 @@ final class MessageListViewController: NSViewController {
 			MainActor.assumeIsolated {
 				guard let self else { return }
 				self.flushScheduled = false
-				let rows = self.pendingCorrections
-				self.pendingCorrections = IndexSet()
-				guard !rows.isEmpty else { return }
-				let wasAtBottom = self.isAtBottom
-				let anchor = wasAtBottom ? nil : self.captureAnchor(changedRows: rows)
-				self.withoutAnimation {
-					self.tableView.noteHeightOfRows(withIndexesChanged: rows)
-					if wasAtBottom { self.scrollToBottom() }
-					else if let anchor { self.restore(anchor) }
-				}
+				self.flushHeightCorrections()
 			}
+		}
+	}
+
+	/// How long to sit on a correction that arrived mid-gesture before looking
+	/// again. There is no "momentum ended" notification to wait on, so the
+	/// deferral re-arms itself until the scroll settles.
+	private static let scrollSettleRetry: TimeInterval = 0.05
+
+	private func deferHeightCorrections(_ rows: IndexSet) {
+		pendingCorrections.formUnion(rows)
+		guard !flushScheduled else { return }
+		flushScheduled = true
+		DispatchQueue.main.asyncAfter(deadline: .now() + Self.scrollSettleRetry) { [weak self] in
+			MainActor.assumeIsolated {
+				guard let self else { return }
+				self.flushScheduled = false
+				self.flushHeightCorrections()
+			}
+		}
+	}
+
+	/// Land the heights `correctHeightIfNeeded` has queued.
+	///
+	/// Every correction waits for the gesture to settle, wherever its row sits.
+	/// A row above the viewport moves everything on screen by its delta, and
+	/// cancelling that shift means writing the clip origin — which mid-gesture
+	/// AppKit overwrites from the scroll on the very next event, so the shift is
+	/// what the user actually sees. A row below the fold disturbs no pixel of its
+	/// own, but noting it still moves the document height, and the scroll view
+	/// re-derives its content size from that — once per frame, for the whole
+	/// gesture, with the toolbar's glass edge effect recomposited each time.
+	private func flushHeightCorrections() {
+		// A correction queued before a reload names a row of the conversation that
+		// was on screen then, not the one on screen now.
+		let rows = pendingCorrections.intersection(IndexSet(integersIn: 0 ..< tableView.numberOfRows))
+		pendingCorrections = IndexSet()
+		guard !rows.isEmpty else { return }
+
+		guard !isScrolling else {
+			deferHeightCorrections(rows)
+			return
+		}
+
+		// Rows queued mid-gesture never got measured — keeping that layout off the
+		// scroll's critical path was the point. Settle up now, but only for what
+		// is on screen: a gesture that crosses the whole transcript queues
+		// hundreds of rows, and measuring every one of them here would trade a
+		// stuttering scroll for a frozen one. The rest carry their estimate until
+		// they come back into view and re-queue themselves.
+		let onScreen = IndexSet(visibleRowIndexes())
+		for row in rows.intersection(onScreen) where !hasExactHeight(messages[row]) {
+			measureExact(row: row)
+		}
+
+		// Noting a row whose height is still a guess re-tiles the table for
+		// nothing, so only the ones holding a real measurement land.
+		let landing = IndexSet(rows.filter { hasExactHeight(messages[$0]) })
+		guard !landing.isEmpty else { return }
+
+		let wasAtBottom = isAtBottom
+		let anchor = wasAtBottom ? nil : captureAnchor(changedRows: landing)
+		withoutAnimation {
+			tableView.noteHeightOfRows(withIndexesChanged: landing)
+			if wasAtBottom { scrollToBottom() }
+			else if let anchor { restore(anchor) }
 		}
 	}
 
@@ -761,7 +976,9 @@ final class MessageListViewController: NSViewController {
 
 		guard animated else {
 			cancelScrollAnimation()
+			isWritingClipOrigin = true
 			clip.setBoundsOrigin(target)
+			isWritingClipOrigin = false
 			scrollView.reflectScrolledClipView(clip)
 			updateDistanceFromBottom()
 			return
@@ -839,7 +1056,7 @@ final class MessageListViewController: NSViewController {
 		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
 	}
 
-	func invalidateAllHeights() {
+	private func invalidateAllHeights() {
 		guard columnWidth > 0, !messages.isEmpty else {
 			heightCache.removeAll()
 			return
@@ -932,17 +1149,8 @@ final class MessageListViewController: NSViewController {
 
 	// MARK: Bubble view (shared by measurement and display — must match)
 
-	private func rootView(for message: Message) -> AnyView {
-		AnyView(
-			MessageBubble(message: message)
-				.id(message.id)
-				.padding(.leading, rowInsetLeading)
-				.padding(.trailing, rowInsetTrailing)
-				.padding(.vertical, rowInsetVertical)
-				.textSelection(.enabled)
-				.environment(manager)
-				.environment(themes)
-		)
+	private func rootView(for message: Message, width: CGFloat? = nil) -> BubbleRoot {
+		BubbleRoot(message: message, manager: manager, themes: themes, width: width)
 	}
 }
 
@@ -957,9 +1165,10 @@ extension MessageListViewController: NSTableViewDataSource, NSTableViewDelegate 
 	}
 
 	func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-		let cell = (tableView.makeView(withIdentifier: Self.cellID, owner: self) as? BubbleCellView)
-			?? BubbleCellView(identifier: Self.cellID)
-		cell.host.rootView = rootView(for: messages[row])
+		let root = rootView(for: messages[row])
+		guard let cell = tableView.makeView(withIdentifier: Self.cellID, owner: self) as? BubbleCellView
+		else { return BubbleCellView(identifier: Self.cellID, root: root) }
+		cell.host.rootView = root
 		return cell
 	}
 
@@ -1019,9 +1228,10 @@ private final class BufferedTableView: NSTableView {
 // MARK: - Cell
 
 private final class BubbleCellView: NSTableCellView {
-	let host = NSHostingView(rootView: AnyView(EmptyView()))
+	let host: NSHostingView<BubbleRoot>
 
-	init(identifier: NSUserInterfaceItemIdentifier) {
+	init(identifier: NSUserInterfaceItemIdentifier, root: BubbleRoot) {
+		host = NSHostingView(rootView: root)
 		super.init(frame: .zero)
 		self.identifier = identifier
 		host.translatesAutoresizingMaskIntoConstraints = false

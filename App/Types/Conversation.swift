@@ -33,7 +33,8 @@ class Conversation {
 	var options: ChatOptions {
 		ChatOptions(
 			temperature: temperature,
-			maxResponseTokens: maxResponseTokens
+			maxResponseTokens: maxResponseTokens,
+			sessionKey: id
 		)
 	}
 
