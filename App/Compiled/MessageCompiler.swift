@@ -73,6 +73,7 @@ enum MessageCompiler {
 				width: usable,
 				style: style,
 				slicer: SourceSlicer(source),
+				mathPreamble: style.rendersMath ? LatexCompat.documentPreamble(in: text) : "",
 				cache: cache
 			)
 			compiler.run(document.blockChildren, indent: 0, quoteDepth: 0)
@@ -462,15 +463,21 @@ private final class BlockCompiler {
 
 	var contentSize: CGSize { CGSize(width: maxX, height: y) }
 
+	/// Macro definitions gathered from the whole message, so an equation can use a
+	/// `\newcommand` written in a different block.
+	private let mathPreamble: String
+
 	init(
 		width: CGFloat,
 		style: CompileStyle,
 		slicer: SourceSlicer,
+		mathPreamble: String = "",
 		cache: BlockLayoutCache = BlockLayoutCache()
 	) {
 		self.width = width
 		self.style = style
 		self.slicer = slicer
+		self.mathPreamble = mathPreamble
 		self.cache = cache
 	}
 
@@ -591,7 +598,7 @@ private final class BlockCompiler {
 		let body = node.code.trimmingCharacters(in: .newlines)
 
 		if style.rendersMath, node.language == MathMarkdown.language {
-			let prepared = LatexCompat.prepare(body)
+			let prepared = LatexCompat.prepare(body, preamble: mathPreamble)
 			if let entry = MathCache.entry(
 				latex: prepared.latex,
 				fontSize: style.equationFontSize,

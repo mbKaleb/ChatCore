@@ -68,7 +68,7 @@ subject to a per-user daily quota.
 Clone and open the project:
 
 ```bash
-git clone git@github.com:mbKaleb/coreChat.git
+git clone git@github.com:mbKaleb/ChatCore.git
 ```
 
 ```bash
@@ -95,7 +95,7 @@ The Anthropic backend registers only when `ClaudeForFoundationModels` is
 importable, and it vends models only when it finds an API key. It looks in two
 places, in order:
 
-1. **Keychain** — service `com.franken.ChatCore`, account `anthropic.api-key`.
+1. **Keychain** — service `com.mbkaleb.corechat`, account `anthropic.api-key`.
    Set this from Settings › Accounts; the key is stored first, then checked
    against the vendor, so a dropped network can't lose a good key.
 2. **Environment** — `ANTHROPIC_API_KEY`, useful for scheme-level development.
@@ -191,7 +191,7 @@ App/
     ModelManager.swift   routing, capability cache, live streaming state
     AppleBackend.swift   on-device + Private Cloud routes
     ClaudeBackend.swift  Anthropic, via ClaudeForFoundationModels
-    AnthropicModelsAPI.swift · AnthropicAPIKeyValidator.swift
+    AnthropicModelsAPI.swift · APIKeyValidator.swift
     KeychainStore.swift  secrets by reference, never by value
     NetworkMonitor.swift · VendorTypes.swift
   Types/                 SwiftData models + wire-neutral values
@@ -204,6 +204,7 @@ App/
   Settings/              settings window and appearance
   Theme/                 fonts and theme manager
 Documentation/
+  README.md              this file
   Diagrams/              Backend-Design.md + architecture SVGs
   YAML/docs.yaml         the diagrams as structured data, for LLM context
 Design/Icon/             app icon source layers
@@ -242,12 +243,12 @@ measurement.
 
 ## Documentation
 
-- [Backend Design](Documentation/Diagrams/Backend-Design.md) — the full design
+- [Backend Design](Diagrams/Backend-Design.md) — the full design
   document: the seam, all three backend families, selection semantics, and open
   questions.
-- [Architecture.svg](Documentation/Diagrams/Architecture.svg) — layered runtime.
-- [Model-Types.svg](Documentation/Diagrams/Model-Types.svg) — the value layer.
-- [docs.yaml](Documentation/YAML/docs.yaml) — both diagrams as structured data,
+- [Architecture.svg](Diagrams/Architecture.svg) — layered runtime.
+- [Model-Types.svg](Diagrams/Model-Types.svg) — the value layer.
+- [docs.yaml](YAML/docs.yaml) — both diagrams as structured data,
   meant to be passed to an LLM in place of the raw SVGs.
 
 ### Not yet built

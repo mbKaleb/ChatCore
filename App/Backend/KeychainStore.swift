@@ -13,7 +13,7 @@ import Security
 /// step with the list of vendors.
 nonisolated enum KeychainStore {
 
-	private static let service = "com.franken.ChatCore"
+	private static let service = "com.mbkaleb.corechat"
 
 	private static let cacheLock = NSLock()
 	nonisolated(unsafe) private static var cache: [String: String?] = [:]

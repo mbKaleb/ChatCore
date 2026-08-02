@@ -15,12 +15,16 @@ import SwiftMath
 
 enum LatexCompat {
 
-	static func prepare(_ latex: String) -> (latex: String, boxed: Bool) {
+	/// - Parameter preamble: Macro definitions gathered from the whole message by
+	///   `documentPreamble(in:)`. Prepended before expansion so an equation can
+	///   use a `\newcommand` written in another block, and stripped along with the
+	///   equation's own definitions.
+	static func prepare(_ latex: String, preamble: String = "") -> (latex: String, boxed: Bool) {
 		// Every math path in the app funnels through here, so this is the one place
 		// that can guarantee the symbol table is populated before a parse.
 		_ = installedSymbols
 
-		var source = normalizeUnicode(latex)
+		var source = normalizeUnicode(preamble.isEmpty ? latex : preamble + " " + latex)
 		source = expandMacros(source)
 		source = expandDeclaredOperators(source)
 		source = rewriteEnvironments(source)
@@ -163,6 +167,11 @@ enum LatexCompat {
 				flush()
 				previous = nil
 				i = afterName
+				// `\\[6pt]` sets the gap to the next row. SwiftMath has no slot for
+				// it and doesn't read it either, so the bracket survives into the
+				// row and is typeset — `\\[6pt] b = 2` rendered as "[6pt]b = 2".
+				if i < source.endIndex, source[i] == "*" { i = source.index(after: i) }
+				i = skipOptionalArgument(in: source, from: i)
 			case "begin", "end":                  // new cell
 				flush()
 				previous = nil
@@ -311,8 +320,44 @@ enum LatexCompat {
 
 		// Definition notation, spelled out as the characters it stands for.
 		"coloneqq": "\\colon\\!=", "coloneq": "\\colon\\!=",
-		"eqqcolon": "=\\!\\colon", "dblcolon": "\\colon\\!\\colon",
-		"vcentcolon": "\\colon",
+		"eqqcolon": "=\\!\\colon", "eqcolon": "=\\!\\colon",
+		"Eqqcolon": "=\\!\\colon\\!\\colon", "Eqcolon": "=\\!\\colon\\!\\colon",
+		"Coloneqq": "\\colon\\!\\colon\\!=", "Coloneq": "\\colon\\!\\colon\\!=",
+		"dblcolon": "\\colon\\!\\colon", "vcentcolon": "\\colon",
+		"colonapprox": "\\colon\\!\\approx", "Colonapprox": "\\colon\\!\\colon\\!\\approx",
+		"colonsim": "\\colon\\!\\sim", "Colonsim": "\\colon\\!\\colon\\!\\sim",
+
+		// The physics package's remaining aliases and the inverse hyperbolics.
+		"gradient": "\\nabla", "divergence": "\\nabla\\cdot",
+		"laplacian": "\\nabla^{2}", "dotproduct": "\\cdot",
+		"crossproduct": "\\times", "cp": "\\times",
+		"trace": "\\mathrm{tr}", "Trace": "\\mathrm{Tr}",
+		"Residue": "\\mathrm{Res}", "principalvalue": "\\mathrm{P.V.}",
+		"pv": "\\mathrm{P.V.}", "real": "\\mathrm{Re}", "imaginary": "\\mathrm{Im}",
+		"differential": "\\mathrm{d}", "diffd": "\\mathrm{d}",
+		"arccsc": "\\mathrm{arccsc}", "arcsec": "\\mathrm{arcsec}",
+		"arccot": "\\mathrm{arccot}", "asin": "\\mathrm{asin}",
+		"acos": "\\mathrm{acos}", "atan": "\\mathrm{atan}",
+		"acsc": "\\mathrm{acsc}", "asec": "\\mathrm{asec}", "acot": "\\mathrm{acot}",
+		"csch": "\\mathrm{csch}", "sech": "\\mathrm{sech}",
+		"coth": "\\mathrm{coth}", "phase": "\\angle",
+		"adjustlimits": "", "nuparrow": "\\uparrow",
+		"sine": "\\sin", "cosine": "\\cos", "tangent": "\\tan",
+		"cosecant": "\\csc", "secant": "\\sec", "cotangent": "\\cot",
+		"vnabla": "\\nabla", "divisionsymbol": "\\div", "flatfrac": "/",
+
+		// The physics package's fixed connecting words, each already spaced.
+		"qcomma": ",\\quad", "qc": ",\\quad",
+		"qif": "\\quad\\text{if}\\quad", "qthen": "\\quad\\text{then}\\quad",
+		"qelse": "\\quad\\text{else}\\quad", "qotherwise": "\\quad\\text{otherwise}\\quad",
+		"qunless": "\\quad\\text{unless}\\quad", "qgiven": "\\quad\\text{given}\\quad",
+		"qusing": "\\quad\\text{using}\\quad", "qassume": "\\quad\\text{assume}\\quad",
+		"qsince": "\\quad\\text{since}\\quad", "qlet": "\\quad\\text{let}\\quad",
+		"qfor": "\\quad\\text{for}\\quad", "qall": "\\quad\\text{all}\\quad",
+		"qeven": "\\quad\\text{even}\\quad", "qodd": "\\quad\\text{odd}\\quad",
+		"qinteger": "\\quad\\text{integer}\\quad", "qand": "\\quad\\text{and}\\quad",
+		"qor": "\\quad\\text{or}\\quad", "qas": "\\quad\\text{as}\\quad",
+		"qin": "\\quad\\text{in}\\quad", "qcc": "\\quad\\text{c.c.}\\quad",
 
 		// Uppercase Greek that LaTeX has no command for, because it is a Latin
 		// letter — models write `\Alpha` anyway.
@@ -364,6 +409,20 @@ enum LatexCompat {
 		"xrightleftharpoons": (1, "{{$0} \\atop {\\rightleftharpoons}}"),
 		"xmapsto": (1, "{{$0} \\atop {\\longmapsto}}"),
 		"xlongequal": (1, "{{$0} \\atop {=}}"),
+		"xRightarrow": (1, "{{$0} \\atop {\\Longrightarrow}}"),
+		"xLeftarrow": (1, "{{$0} \\atop {\\Longleftarrow}}"),
+		"xLeftrightarrow": (1, "{{$0} \\atop {\\Longleftrightarrow}}"),
+		"xrightharpoonup": (1, "{{$0} \\atop {\\rightharpoonup}}"),
+		"xrightharpoondown": (1, "{{$0} \\atop {\\rightharpoondown}}"),
+		"xleftharpoonup": (1, "{{$0} \\atop {\\leftharpoonup}}"),
+		"xleftharpoondown": (1, "{{$0} \\atop {\\leftharpoondown}}"),
+		"xleftrightharpoons": (1, "{{$0} \\atop {\\rightleftharpoons}}"),
+		"xrightleftarrows": (1, "{{$0} \\atop {\\rightleftarrows}}"),
+		"xrightequilibrium": (1, "{{$0} \\atop {\\rightleftharpoons}}"),
+		"xleftequilibrium": (1, "{{$0} \\atop {\\rightleftharpoons}}"),
+		"xtwoheadrightarrow": (1, "{{$0} \\atop {\\twoheadrightarrow}}"),
+		"xtwoheadleftarrow": (1, "{{$0} \\atop {\\twoheadleftarrow}}"),
+		"xtofrom": (1, "{{$0} \\atop {\\rightleftarrows}}"),
 
 		"pmod": (1, "\\;(\\mathrm{mod}\\; {$0})"),
 
@@ -394,6 +453,118 @@ enum LatexCompat {
 		// both halves by stacking them, since the target is information.
 		"cancel": (1, "{$0}"), "bcancel": (1, "{$0}"), "xcancel": (1, "{$0}"),
 		"sout": (1, "{$0}"), "cancelto": (2, "{{$0} \\atop {$1}}"),
+
+		// Zero-width overlaps. SwiftMath has no way to draw one thing on top of
+		// another, so the content is kept at its natural width — `\mathrlap{/}{=}`
+		// becomes `/=` rather than a struck equals.
+		"mathrlap": (1, "{$0}"), "mathllap": (1, "{$0}"), "mathclap": (1, "{$0}"),
+		"rlap": (1, "{$0}"), "llap": (1, "{$0}"), "clap": (1, "{$0}"),
+		"smashoperator": (1, "{$0}"),
+
+		// KaTeX's CSS box.
+		"bbox": (1, "{$0}"),
+
+		// The `physics` package. Dirac notation, vector calculus and derivatives,
+		// all of which have a plain core-LaTeX spelling.
+		"bra": (1, "\\left\\langle $0 \\right|"),
+		"ket": (1, "\\left| $0 \\right\\rangle"),
+		// A template's text is emitted as-is — only the *arguments* are rewritten
+		// again — so every command written here has to be one SwiftMath parses on
+		// its own. That rules out `\middle`, which this file elsewhere drops:
+		// inside a template the drop never runs and it reaches the parser intact.
+		"braket": (2, "\\left\\langle $0 | $1 \\right\\rangle"),
+		"ketbra": (2, "\\left| $0 \\right\\rangle\\left\\langle $1 \\right|"),
+		"ip": (2, "\\left\\langle $0 , $1 \\right\\rangle"),
+		"expval": (1, "\\left\\langle $0 \\right\\rangle"),
+		"mel": (3, "\\left\\langle $0 | $1 | $2 \\right\\rangle"),
+		// The vector accents are bold *and* accented — `\va{a}` is an arrow over a
+		// bold letter, not over a plain one.
+		"vb": (1, "\\mathbf{$0}"),
+		"va": (1, "\\vec{\\mathbf{$0}}"),
+		"vu": (1, "\\hat{\\mathbf{$0}}"),
+		"grad": (0, "\\nabla"), "curl": (0, "\\nabla \\times"),
+		"divergence": (0, "\\nabla \\cdot"), "laplacian": (0, "\\nabla^{2}"),
+		"vdot": (0, "\\cdot"), "cross": (0, "\\times"),
+		"abs": (1, "\\left| $0 \\right|"), "norm": (1, "\\left\\| $0 \\right\\|"),
+		"dd": (0, "\\mathrm{d}"),
+		"comm": (2, "\\left[ $0 , $1 \\right]"),
+		"acomm": (2, "\\left\\{ $0 , $1 \\right\\}"),
+		"pb": (2, "\\left\\{ $0 , $1 \\right\\}"),
+		"Tr": (0, "\\mathrm{Tr}"), "tr": (0, "\\mathrm{tr}"),
+		"rank": (0, "\\mathrm{rank}"), "erf": (0, "\\mathrm{erf}"),
+		"Res": (0, "\\mathrm{Res}"), "PV": (0, "\\mathrm{P.V.}"),
+
+		// The same physics commands under their long names — the package defines
+		// both spellings and answers use them interchangeably.
+		// The brace form of `\quantity` prints *braces*; `\pqty` is the paren one.
+		"quantity": (1, "\\left\\{ $0 \\right\\}"), "pqty": (1, "\\left( $0 \\right)"),
+		"bqty": (1, "\\left[ $0 \\right]"), "Bqty": (1, "\\left\\{ $0 \\right\\}"),
+		"vqty": (1, "\\left| $0 \\right|"),
+		"absolutevalue": (1, "\\left| $0 \\right|"),
+		"evaluated": (1, "\\left. $0 \\right|"), "eval": (1, "\\left. $0 \\right|"),
+		"commutator": (2, "\\left[ $0 , $1 \\right]"),
+		"anticommutator": (2, "\\left\\{ $0 , $1 \\right\\}"),
+		"acommutator": (2, "\\left\\{ $0 , $1 \\right\\}"),
+		"poissonbracket": (2, "\\left\\{ $0 , $1 \\right\\}"),
+		"vectorbold": (1, "\\mathbf{$0}"), "vectorarrow": (1, "\\vec{$0}"),
+		"vectorunit": (1, "\\hat{$0}"),
+		"innerproduct": (2, "\\left\\langle $0 , $1 \\right\\rangle"),
+		"outerproduct": (2, "\\left| $0 \\right\\rangle\\left\\langle $1 \\right|"),
+		"dyad": (2, "\\left| $0 \\right\\rangle\\left\\langle $1 \\right|"),
+		"op": (2, "\\left| $0 \\right\\rangle\\left\\langle $1 \\right|"),
+		"expectationvalue": (1, "\\left\\langle $0 \\right\\rangle"),
+		"ev": (1, "\\left\\langle $0 \\right\\rangle"),
+		"vev": (1, "\\left\\langle 0 \\right| $0 \\left| 0 \\right\\rangle"),
+		"matrixelement": (3, "\\left\\langle $0 | $1 | $2 \\right\\rangle"),
+		"matrixel": (3, "\\left\\langle $0 | $1 | $2 \\right\\rangle"),
+		// Big-O is set in `\mathcal`, not as an italic variable named O.
+		"order": (1, "\\mathcal{O}\\!\\left( $0 \\right)"),
+		"prescript": (3, "{}^{$0}_{$1}$2"),
+
+		// `\mqty{a & b \\ c & d}` is the physics package's matrix. The body is
+		// already rows and cells, so it only needs the environment around it —
+		// `matrix` places no constraint on the column count, which is why these
+		// don't need the reshaping the `aligned` family does.
+		"mqty": (1, "\\begin{matrix} $0 \\end{matrix}"),
+		"matrixquantity": (1, "\\begin{matrix} $0 \\end{matrix}"),
+		"smqty": (1, "\\begin{matrix} $0 \\end{matrix}"),
+		"smallmatrixquantity": (1, "\\begin{matrix} $0 \\end{matrix}"),
+		"pmqty": (1, "\\begin{pmatrix} $0 \\end{pmatrix}"),
+		"Pmqty": (1, "\\begin{pmatrix} $0 \\end{pmatrix}"),
+		"spmqty": (1, "\\begin{pmatrix} $0 \\end{pmatrix}"),
+		"sPmqty": (1, "\\begin{pmatrix} $0 \\end{pmatrix}"),
+		"bmqty": (1, "\\begin{bmatrix} $0 \\end{bmatrix}"),
+		"sbmqty": (1, "\\begin{bmatrix} $0 \\end{bmatrix}"),
+		"vmqty": (1, "\\begin{vmatrix} $0 \\end{vmatrix}"),
+		"svmqty": (1, "\\begin{vmatrix} $0 \\end{vmatrix}"),
+		"mdet": (1, "\\begin{vmatrix} $0 \\end{vmatrix}"),
+		"matrixdeterminant": (1, "\\begin{vmatrix} $0 \\end{vmatrix}"),
+		"smdet": (1, "\\begin{vmatrix} $0 \\end{vmatrix}"),
+		"smallmatrixdeterminant": (1, "\\begin{vmatrix} $0 \\end{vmatrix}"),
+
+		// siunitx ranges and lists, and the angle.
+		"numrange": (2, "$0\\text{ to }$1"),
+		"ang": (1, "$0^{\\circ}"),
+
+		// The physics package's "quick text" with an argument.
+		"qqtext": (1, "\\quad\\text{$0}\\quad"), "qq": (1, "\\quad\\text{$0}\\quad"),
+
+		// `\underbracket`/`\overbracket` draw a squared-off brace; the rule is the
+		// nearest thing that draws at all.
+		"underbracket": (1, "\\underline{$0}"), "overbracket": (1, "\\overline{$0}"),
+
+		// Preamble and layout directives with nothing to render.
+		"intertext": (1, ""), "shortintertext": (1, ""),
+		"numberwithin": (2, ""), "definecolor": (3, ""),
+		"sisetup": (1, ""), "DeclareSIUnit": (2, ""), "DeclareSIPrefix": (3, ""),
+		"multlined": (1, "{$0}"), "Aboxed": (1, "{$0}"),
+		"splitfrac": (2, "{{$0} \\atop {$1}}"), "splitdfrac": (2, "{{$0} \\atop {$1}}"),
+		"pod": (1, "\\;($0)"),
+
+		// `\sideset{_a^b}{_c^d}\sum` hangs scripts on both sides of an operator.
+		// Nothing here can put them on the left, so both groups are emitted ahead
+		// of it on an empty atom — the scripts survive, their side does not.
+		"sideset": (2, "{}$0{}$1"),
 	]
 
 	/// Commands whose first argument is optional and bracketed, consumed and
@@ -405,6 +576,24 @@ enum LatexCompat {
 	private static let leadingOptionalArgument: Set<String> = [
 		"smash", "xrightarrow", "xleftarrow", "xhookrightarrow", "xhookleftarrow",
 		"xrightleftharpoons", "xleftrightarrow", "xmapsto", "xlongequal",
+		"bbox", "smashoperator",
+	]
+
+	/// Commands whose braces hold a miniature language, and how many they take.
+	/// Translated by `LatexPackages`, which understands the grammar inside.
+	private static let packageLanguages: [String: Int] = [
+		"ce": 1, "pu": 1, "si": 1, "unit": 1, "num": 1,
+		"qty": 2, "SI": 2, "qtylist": 2, "SIlist": 2,
+		"qtyrange": 3, "SIrange": 3,
+	]
+
+	/// Commands whose starred form means "set limits above and below".
+	///
+	/// SwiftMath draws no limits on a `\mathrm`, so the star is consumed rather
+	/// than honoured — left in place it becomes a literal `*` between the command
+	/// and its argument, and `\mathrm*{ess sup}` doesn't parse at all.
+	private static let starredForms: Set<String> = [
+		"operatorname", "argmax", "argmin", "smashoperator",
 	]
 
 	/// `\not` applied to a relation, as the single negated symbol it means.
@@ -441,11 +630,15 @@ enum LatexCompat {
 				continue
 			}
 
-			let (name, afterName) = commandName(in: source, backslashAt: i)
+			var (name, afterName) = commandName(in: source, backslashAt: i)
 			guard !name.isEmpty else {
 				out.append(source[i])
 				i = source.index(after: i)
 				continue
+			}
+
+			if starredForms.contains(name), afterName < source.endIndex, source[afterName] == "*" {
+				afterName = source.index(after: afterName)
 			}
 
 			// `\not` binds to whatever follows and has to become one negated
@@ -476,6 +669,58 @@ enum LatexCompat {
 				// rendering the opposite of what it says.
 				out += "\\not"
 				i = afterName
+				continue
+			}
+
+			// The extension packages whose braces hold a language rather than an
+			// argument. Their bodies are translated whole, not rewritten token by
+			// token, so they're handled before the argument tables.
+			if let arity = packageLanguages[name] {
+				var arguments: [String] = []
+				var cursor = skipOptionalArgument(in: source, from: afterName)
+				// Braces only, never the single-token fallback `readArgument`
+				// allows. `\qty` is two different commands: siunitx's takes a value
+				// and a unit, the physics package's takes one group and means
+				// auto-sized braces around it. Reading loosely, `\qty{x} y` — the
+				// physics form — came out as "x y" typeset as a quantity, which is
+				// the silent kind of wrong. Requiring a real second group tells them
+				// apart, and the physics reading is the fallback below.
+				for _ in 0..<arity {
+					guard let argument = readBracedArgument(in: source, from: cursor) else { break }
+					arguments.append(argument.text)
+					cursor = argument.end
+				}
+
+				if arguments.count == 1, name == "qty" {
+					out += "\\left\\{ \(rewriteCommands(arguments[0])) \\right\\}"
+					i = cursor
+					continue
+				}
+
+				if arguments.count == arity {
+					switch name {
+					case "ce", "chemfig": out += Chemistry.translate(arguments[0])
+					case "pu": out += Chemistry.units(arguments[0])
+					case "si", "unit": out += SIUnits.unit(arguments[0])
+					case "num": out += arguments[0]
+					case "qtylist", "SIlist":
+						out += SIUnits.list(arguments[0], unit: arguments[1])
+					case "qtyrange", "SIrange":
+						out += SIUnits.range(arguments[0], arguments[1], unit: arguments[2])
+					default: out += SIUnits.quantity(value: arguments[0], unit: arguments[1])
+					}
+					i = cursor
+					continue
+				}
+			}
+
+			// `\dv[2]{f}{x}` puts its order in two places at once — on the operator
+			// above and on the variable below — which no substitution template can
+			// express.
+			if let differential = derivativeOperators[name],
+			   let rewritten = rewriteDerivative(in: source, from: afterName, using: differential) {
+				out += rewritten.text
+				i = rewritten.end
 				continue
 			}
 
@@ -626,6 +871,52 @@ enum LatexCompat {
 		return letters == 2 ? unit : i
 	}
 
+	/// The `physics` package's derivative commands, and the differential each uses.
+	private static let derivativeOperators: [String: String] = [
+		"dv": "\\mathrm{d}", "odv": "\\mathrm{d}", "derivative": "\\mathrm{d}",
+		"pdv": "\\partial", "pderivative": "\\partial", "partialderivative": "\\partial",
+		"fdv": "\\delta", "functionalderivative": "\\delta", "fderivative": "\\delta",
+		"var": "\\delta", "variation": "\\delta",
+	]
+
+	/// `\dv{f}{x}` and `\dv[n]{f}{x}`, as the fractions they stand for.
+	///
+	/// The order appears twice — `\frac{d^{n} f}{d x^{n}}` — so it is read once
+	/// and written into both halves. `\dv{x}` with a single argument is the
+	/// operator on its own, which is how it's written before a bracketed
+	/// expression.
+	private static func rewriteDerivative(
+		in source: String,
+		from start: String.Index,
+		using differential: String
+	) -> (text: String, end: String.Index)? {
+		var cursor = start
+		var order = ""
+
+		let afterOrder = skipOptionalArgument(in: source, from: cursor)
+		if afterOrder != cursor {
+			var open = cursor
+			while open < source.endIndex, source[open] != "[" { open = source.index(after: open) }
+			order = String(source[source.index(after: open)..<source.index(before: afterOrder)])
+			cursor = afterOrder
+		}
+
+		guard let first = readArgument(in: source, from: cursor) else { return nil }
+		let power = order.isEmpty ? "" : "^{\(order)}"
+
+		guard let second = readArgument(in: source, from: first.end) else {
+			// One argument: the operator applied to it, with no denominator.
+			return (
+				"\\frac{\(differential)\(power)}{\(differential) \(rewriteCommands(first.text))\(power)}",
+				first.end
+			)
+		}
+
+		let numerator = "\(differential)\(power) \(rewriteCommands(first.text))"
+		let denominator = "\(differential) \(rewriteCommands(second.text))\(power)"
+		return ("\\frac{\(numerator)}{\(denominator)}", second.end)
+	}
+
 	/// `\genfrac{left}{right}{thickness}{style}{numerator}{denominator}`.
 	///
 	/// Six arguments, of which SwiftMath can honour two — plus the delimiters,
@@ -657,6 +948,23 @@ enum LatexCompat {
 		return ("\\left\(left) \(body) \\right\(right)", cursor)
 	}
 
+	/// The next `{…}` group, and nothing else.
+	///
+	/// Unlike `readArgument` this refuses to treat a bare character as a group,
+	/// which is what lets a command tell "the author wrote a second argument"
+	/// apart from "the next word happened to be there".
+	private static func readBracedArgument(
+		in source: String,
+		from start: String.Index
+	) -> (text: String, end: String.Index)? {
+		var i = start
+		while i < source.endIndex, source[i] == " " || source[i] == "\n" { i = source.index(after: i) }
+		guard i < source.endIndex, source[i] == "{",
+		      let close = matchingBrace(in: source, openingAt: i)
+		else { return nil }
+		return (String(source[source.index(after: i)..<close]), source.index(after: close))
+	}
+
 	private static func substitute(_ template: String, _ arguments: [String]) -> String {
 		var out = template
 		for (index, argument) in arguments.enumerated() {
@@ -678,8 +986,22 @@ enum LatexCompat {
 
 	private struct Macro {
 		let parameters: Int
+		/// `\newcommand{\pow}[2][2]{#2^{#1}}` — the first parameter is optional and
+		/// this is what `#1` becomes when the call site doesn't bracket one.
+		let optionalDefault: String?
 		let body: String
 	}
+
+	/// Stands in for a backslash in a body that must not be expanded again.
+	///
+	/// `\let\oldphi\phi` binds what `\phi` means *now*. If the next line says
+	/// `\renewcommand{\phi}{\varphi}` then `\oldphi` must still be the original
+	/// φ — but an expander that loops to a fixed point over plain text would walk
+	/// `\oldphi` → `\phi` → `\varphi` and render `\phi \ne \oldphi` as φ ≠ φ,
+	/// which is worse than not supporting `\let` at all. Bodies captured by
+	/// `\let` carry this sentinel instead of a backslash, so nothing matches them
+	/// on later passes; it is turned back into a backslash at the end.
+	private static let protectedEscape = "\u{E000}"
 
 	/// Definitions are collected and removed, then applied until nothing is left
 	/// to expand.
@@ -695,7 +1017,8 @@ enum LatexCompat {
 
 	private static func expandMacros(_ source: String) -> String {
 		let definers = ["newcommand", "renewcommand", "providecommand", "def", "gdef", "edef", "xdef"]
-		guard definers.contains(where: { source.contains("\\" + $0) }) else { return source }
+		let hasDefiner = definers.contains { source.contains("\\" + $0) } || source.contains("\\let")
+		guard hasDefiner else { return source }
 
 		var macros: [String: Macro] = [:]
 		var stripped = ""
@@ -709,6 +1032,36 @@ enum LatexCompat {
 			}
 
 			let (name, afterName) = commandName(in: source, backslashAt: i)
+
+			// `\let\a\b` aliases, binding what `\b` means at this point in the
+			// document rather than at the end of it.
+			if name == "let" {
+				var cursor = afterName
+				while cursor < source.endIndex, source[cursor] == " " { cursor = source.index(after: cursor) }
+				guard cursor < source.endIndex, source[cursor] == "\\" else {
+					stripped += "\\let"
+					i = afterName
+					continue
+				}
+				let (alias, afterAlias) = commandName(in: source, backslashAt: cursor)
+				cursor = afterAlias
+				while cursor < source.endIndex, source[cursor] == " " || source[cursor] == "=" {
+					cursor = source.index(after: cursor)
+				}
+				guard cursor < source.endIndex, source[cursor] == "\\" else {
+					stripped += "\\let"
+					i = afterName
+					continue
+				}
+				let (target, afterTarget) = commandName(in: source, backslashAt: cursor)
+				// A macro's body is copied; anything else is captured as a literal
+				// that later redefinitions can't reach.
+				macros[alias] = macros[target]
+					?? Macro(parameters: 0, optionalDefault: nil, body: protectedEscape + target)
+				i = afterTarget
+				continue
+			}
+
 			guard definers.contains(name) else {
 				stripped += "\\" + (name.isEmpty ? String(source[source.index(after: i)]) : name)
 				i = name.isEmpty ? source.index(i, offsetBy: 2) : afterName
@@ -720,6 +1073,7 @@ enum LatexCompat {
 			var cursor = afterName
 			var macroName = ""
 			var parameters = 0
+			var optionalDefault: String?
 
 			if name.hasSuffix("def") {
 				while cursor < source.endIndex, source[cursor] == " " { cursor = source.index(after: cursor) }
@@ -732,10 +1086,21 @@ enum LatexCompat {
 				macroName = defined
 				cursor = afterDefined
 				// A `\def` parameter text is a run of `#1#2…` before the body.
-				while cursor < source.endIndex, source[cursor] == "#" {
+				var delimited = false
+				while cursor < source.endIndex, source[cursor] != "{" {
+					guard source[cursor] == "#" else { delimited = true; break }
 					cursor = source.index(after: cursor)
 					if cursor < source.endIndex, source[cursor].isNumber { cursor = source.index(after: cursor) }
 					parameters += 1
+				}
+				// `\def\pair#1.#2;{…}` matches literal text between its parameters.
+				// Reading that as an ordinary two-argument macro would silently
+				// pair the wrong tokens, so the definition is skipped and the call
+				// site is left to fail visibly.
+				if delimited {
+					stripped += "\\" + name
+					i = afterName
+					continue
 				}
 			} else {
 				guard let named = readArgument(in: source, from: cursor) else {
@@ -745,11 +1110,20 @@ enum LatexCompat {
 				}
 				macroName = named.text.trimmingCharacters(in: CharacterSet(charactersIn: "\\ "))
 				cursor = named.end
-				let afterOptional = skipOptionalArgument(in: source, from: cursor)
-				if afterOptional != cursor {
-					let digits = source[cursor..<afterOptional].filter(\.isNumber)
-					parameters = Int(digits) ?? 0
-					cursor = afterOptional
+
+				let afterCount = skipOptionalArgument(in: source, from: cursor)
+				if afterCount != cursor {
+					parameters = Int(source[cursor..<afterCount].filter(\.isNumber)) ?? 0
+					cursor = afterCount
+					// A second bracket is the default for `#1`.
+					let afterDefault = skipOptionalArgument(in: source, from: cursor)
+					if afterDefault != cursor {
+						var open = cursor
+						while open < source.endIndex, source[open] != "[" { open = source.index(after: open) }
+						let close = source.index(before: afterDefault)
+						optionalDefault = String(source[source.index(after: open)..<close])
+						cursor = afterDefault
+					}
 				}
 			}
 
@@ -759,7 +1133,11 @@ enum LatexCompat {
 				continue
 			}
 
-			macros[macroName] = Macro(parameters: parameters, body: body.text)
+			macros[macroName] = Macro(
+				parameters: parameters,
+				optionalDefault: optionalDefault,
+				body: body.text
+			)
 			i = body.end
 		}
 
@@ -795,7 +1173,24 @@ enum LatexCompat {
 
 				var arguments: [String] = []
 				var cursor = afterName
-				for _ in 0..<macro.parameters {
+				var required = macro.parameters
+
+				// An optional first parameter takes a bracketed argument if the
+				// call site supplies one, and the declared default otherwise.
+				if let fallback = macro.optionalDefault {
+					let afterOptional = skipOptionalArgument(in: out, from: cursor)
+					if afterOptional != cursor {
+						var open = cursor
+						while open < out.endIndex, out[open] != "[" { open = out.index(after: open) }
+						arguments.append(String(out[out.index(after: open)..<out.index(before: afterOptional)]))
+						cursor = afterOptional
+					} else {
+						arguments.append(fallback)
+					}
+					required -= 1
+				}
+
+				for _ in 0..<required {
 					guard let argument = readArgument(in: out, from: cursor) else { break }
 					arguments.append(argument.text)
 					cursor = argument.end
@@ -806,9 +1201,12 @@ enum LatexCompat {
 					continue
 				}
 
+				// Highest index first, or `#1` would rewrite the `#1` inside `#10`
+				// — and, more commonly, a body using `#1` and `#2` would have its
+				// `#2` clobbered by an argument that itself contained `#2`.
 				var body = macro.body
-				for (index, argument) in arguments.enumerated() {
-					body = body.replacingOccurrences(of: "#\(index + 1)", with: argument)
+				for index in stride(from: arguments.count, through: 1, by: -1) {
+					body = body.replacingOccurrences(of: "#\(index)", with: arguments[index - 1])
 				}
 				next += body
 				j = cursor
@@ -819,7 +1217,107 @@ enum LatexCompat {
 			out = next
 		}
 
-		return out
+		return out.replacingOccurrences(of: protectedEscape, with: "\\")
+	}
+
+	/// Every macro definition in a whole message, as a preamble for its equations.
+	///
+	/// A model writes `\newcommand{\R}{\mathbb{R}}` once and then uses `\R` in
+	/// equations further down, the way a LaTeX preamble works. Each equation is
+	/// prepared on its own, so without this the definition is stripped from the
+	/// block it appears in and every later `\R` is an unknown command.
+	///
+	/// Scanned out of the raw message rather than out of any one equation, so a
+	/// definition sitting in prose — or in a different block from its use — still
+	/// counts.
+	static func documentPreamble(in source: String) -> String {
+		let definers = [
+			"\\newcommand", "\\renewcommand", "\\providecommand",
+			"\\def", "\\gdef", "\\edef", "\\xdef", "\\let", "\\DeclareMathOperator",
+		]
+		guard definers.contains(where: source.contains) else { return "" }
+
+		var preamble: [String] = []
+		var i = source.startIndex
+
+		while i < source.endIndex {
+			guard source[i] == "\\" else {
+				i = source.index(after: i)
+				continue
+			}
+
+			let (name, afterName) = commandName(in: source, backslashAt: i)
+			guard !name.isEmpty, definers.contains("\\" + name) else {
+				i = name.isEmpty ? source.index(after: i) : afterName
+				continue
+			}
+
+			// Copy the whole definition across verbatim — `expandMacros` is the one
+			// that understands its shape, and this only has to find where it ends.
+			guard let end = endOfDefinition(in: source, name: name, from: afterName) else {
+				i = afterName
+				continue
+			}
+			preamble.append(String(source[i..<end]))
+			i = end
+		}
+
+		return preamble.joined(separator: " ")
+	}
+
+	/// Where a definition beginning at `from` stops.
+	private static func endOfDefinition(
+		in source: String,
+		name: String,
+		from start: String.Index
+	) -> String.Index? {
+		var cursor = start
+
+		if name == "let" {
+			for _ in 0..<2 {
+				while cursor < source.endIndex, source[cursor] == " " || source[cursor] == "=" {
+					cursor = source.index(after: cursor)
+				}
+				guard cursor < source.endIndex, source[cursor] == "\\" else { return nil }
+				cursor = commandName(in: source, backslashAt: cursor).end
+			}
+			return cursor
+		}
+
+		// Skip the name, any `[…]` counts or defaults, and any `#1#2…` text, then
+		// take the braced body.
+		while cursor < source.endIndex, source[cursor] != "{" {
+			switch source[cursor] {
+			case " ", "*", "#": cursor = source.index(after: cursor)
+			case "\\": cursor = commandName(in: source, backslashAt: cursor).end
+			case "[":
+				let after = skipOptionalArgument(in: source, from: cursor)
+				guard after != cursor else { return nil }
+				cursor = after
+			case let character where character.isNumber: cursor = source.index(after: cursor)
+			default: return nil
+			}
+		}
+
+		// `\newcommand{\name}{body}` and `\DeclareMathOperator{\name}{body}` have
+		// two braced groups; `\def\name{body}` has one.
+		let groups = name.hasSuffix("def") ? 1 : 2
+		for _ in 0..<groups {
+			while cursor < source.endIndex, source[cursor] == " " { cursor = source.index(after: cursor) }
+			guard cursor < source.endIndex, source[cursor] == "{",
+			      let close = matchingBrace(in: source, openingAt: cursor)
+			else { return nil }
+			cursor = source.index(after: close)
+			// `\newcommand{\pow}[2][2]{…}` puts *two* bracket groups between its
+			// braces — the parameter count and the default for `#1` — so this has
+			// to consume however many are there rather than one.
+			while true {
+				let afterOptional = skipOptionalArgument(in: source, from: cursor)
+				if afterOptional == cursor { break }
+				cursor = afterOptional
+			}
+		}
+		return cursor
 	}
 
 	// MARK: - Declared operators
@@ -890,10 +1388,24 @@ enum LatexCompat {
 	private static let environmentRewrites: [String: String] = [
 		"array": "matrix", "smallmatrix": "matrix", "subarray": "matrix",
 		"multline": "gather", "multline*": "gather", "gather*": "gather",
+		// `gathered` is the inline form of `gather` and SwiftMath implements
+		// neither the name nor an alias for it.
+		"gathered": "gather", "gathered*": "gather",
 		"displaylines": "gather", "eqalign": "aligned", "split": "aligned",
 		"align": "aligned", "align*": "aligned", "aligned*": "aligned",
 		"alignat": "aligned", "alignat*": "aligned",
+		"alignedat": "aligned", "alignedat*": "aligned",
 		"equation": "aligned", "equation*": "aligned",
+		// mathtools' case variants, all of which are `cases` with different
+		// delimiters or an upright body.
+		"dcases": "cases", "dcases*": "cases", "cases*": "cases",
+		"rcases": "cases", "drcases": "cases",
+		// amsmath's script-sized matrices.
+		"psmallmatrix": "pmatrix", "bsmallmatrix": "bmatrix",
+		"vsmallmatrix": "vmatrix", "Bsmallmatrix": "Bmatrix",
+		"Vsmallmatrix": "Vmatrix",
+		"matrix*": "matrix", "pmatrix*": "pmatrix", "bmatrix*": "bmatrix",
+		"vmatrix*": "vmatrix", "Bmatrix*": "Bmatrix", "Vmatrix*": "Vmatrix",
 	]
 
 	/// How many columns SwiftMath's table builder insists on, by environment.

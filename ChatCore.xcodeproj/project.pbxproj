@@ -17,6 +17,16 @@
 		A0641AE82FE0B13B00EFD3BE /* ChatCore.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChatCore.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A0D71664301FDC2B008306FA /* Exceptions for "Documentation" folder in "ChatCore" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				README.md,
+			);
+			target = A0641AE72FE0B13B00EFD3BE /* ChatCore */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A0D27C3C2FE8B85B006C2D1C /* App */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
@@ -25,6 +35,9 @@
 		};
 		A0E7E9BF3002B1DD00958C57 /* Documentation */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A0D71664301FDC2B008306FA /* Exceptions for "Documentation" folder in "ChatCore" target */,
+			);
 			path = Documentation;
 			sourceTree = "<group>";
 		};
@@ -302,7 +315,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.franken.ChatCore;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mbkaleb.corechat;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;
@@ -342,7 +355,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.franken.ChatCore;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mbkaleb.corechat;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;

@@ -11,7 +11,7 @@ nonisolated final class NetworkMonitor: @unchecked Sendable {
 	static let shared = NetworkMonitor()
 
 	private let monitor = NWPathMonitor()
-	private let queue = DispatchQueue(label: "com.franken.ChatCore.network-path")
+	private let queue = DispatchQueue(label: "com.mbkaleb.corechat.network-path")
 
 	private let lock = NSLock()
 	private var online = true

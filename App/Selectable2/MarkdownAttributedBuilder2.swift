@@ -22,10 +22,15 @@ struct MarkdownAttributedBuilder2 {
 
 	var style: Selectable2Style
 
+	/// Macro definitions gathered from the whole message, so an equation can use a
+	/// `\newcommand` written in a different block. Set once per `build`.
+	private var mathPreamble = ""
+
 	/// Fenced languages that render as a typeset equation rather than as code.
 	static let attachmentLanguages: Set<String> = ["math", "latex", "katex"]
 
-	func build(_ source: String) -> NSAttributedString {
+	mutating func build(_ source: String) -> NSAttributedString {
+		mathPreamble = style.rendersMath ? LatexCompat.documentPreamble(in: source) : ""
 		let document = Document(parsing: source)
 		let out = NSMutableAttributedString()
 		var counter = 0
@@ -195,7 +200,7 @@ struct MarkdownAttributedBuilder2 {
 		isInline: Bool,
 		pointSize: CGFloat? = nil
 	) -> MathAttachment2? {
-		let prepared = LatexCompat.prepare(latex)
+		let prepared = LatexCompat.prepare(latex, preamble: mathPreamble)
 		guard let entry = MathCache.entry(
 			latex: prepared.latex,
 			fontSize: isInline

@@ -78,7 +78,7 @@ enum TranscriptRenderer: String, CaseIterable, Identifiable {
 	/// painted by the layout fragment rather than hosted in a SwiftUI view.
 	case selectable2
 
-	static let `default` = TranscriptRenderer.compiled
+	static let `default` = TranscriptRenderer.selectable2
 
 	var id: String { rawValue }
 

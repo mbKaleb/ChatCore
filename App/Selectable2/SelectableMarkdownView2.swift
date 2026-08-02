@@ -213,7 +213,8 @@ struct SelectableMarkdownView2: NSViewRepresentable {
 			renderedMathToken = mathToken
 
 			guard let contentStorage else { return }
-			let built = MarkdownAttributedBuilder2(style: style).build(markdown)
+			var builder = MarkdownAttributedBuilder2(style: style)
+			let built = builder.build(markdown)
 
 			// Streaming appends land after any existing selection, so restoring it
 			// verbatim keeps the user's selection alive across token updates.
