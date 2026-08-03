@@ -49,6 +49,9 @@ struct ListMessageView: TranscriptRendering {
 	@State private var hasRestoredInitialScrollPosition = false
 	@State private var scrollPosition = ScrollPosition()
 
+	@State private var indicatorOpacity: Double = 0
+	@State private var fadeTask: Task<Void, Never>?
+
 	private static let bottomSpacerID = "ListMessageView.bottomSpacer"
 
 	private let contentLeading: CGFloat = 16
@@ -120,6 +123,31 @@ struct ListMessageView: TranscriptRendering {
 			.scrollContentBackground(.hidden)
 			.textSelection(.enabled)
 			.scrollPosition($scrollPosition)
+
+			// The system indicator is off because it can't be tamed: SwiftUI
+			// enforces its own NSScroller on the List's scroll view — a quiet
+			// one seated there is evicted synchronously — and with "Show
+			// scroll bars: Always" the legacy scroller it enforces takes 17pt
+			// out of every row. The capsule overlaid below stands in.
+			.scrollIndicators(.never)
+			.onScrollPhaseChange { _, newPhase in
+				let byGesture = switch newPhase {
+				case .tracking, .interacting, .decelerating: true
+				default: false
+				}
+
+				fadeTask?.cancel()
+				if byGesture {
+					withAnimation(.easeOut(duration: 0.12)) { indicatorOpacity = 1 }
+				} else if indicatorOpacity > 0 {
+					fadeTask = Task {
+						try? await Task.sleep(for: .milliseconds(700))
+						guard !Task.isCancelled else { return }
+						withAnimation(.easeOut(duration: 0.35)) { indicatorOpacity = 0 }
+					}
+				}
+			}
+			.overlay(alignment: .topTrailing) { scrollIndicator }
 
 			.onGeometryChange(
 				for: CGSize.self,
@@ -193,6 +221,33 @@ struct ListMessageView: TranscriptRendering {
 		}
 	}
 
+	/// The transcript's own scroll indicator, standing in for the system's.
+	///
+	/// It appears only for the gesture-driven scroll phases — tracking,
+	/// interacting, decelerating — so every programmatic placement (opening a
+	/// chat at its saved offset, sticking to the bottom mid-stream, which
+	/// arrives as `.animating`) moves the transcript in silence. Geometry
+	/// falls out of state the view already tracks for its bottom-proximity
+	/// logic; display-only, like an iOS indicator.
+	@ViewBuilder
+	private var scrollIndicator: some View {
+		let scrollable = contentHeight - viewportHeight
+		if scrollable > 0, viewportHeight > 0 {
+			let inset: CGFloat = 4
+			let track = viewportHeight - 2 * inset
+			let knobHeight = max(24, track * viewportHeight / contentHeight)
+			let progress = min(1, max(0, 1 - currentDistanceFromBottom / scrollable))
+
+			Capsule()
+				.fill(.secondary.opacity(0.55))
+				.frame(width: 6, height: knobHeight)
+				.offset(y: inset + (track - knobHeight) * progress)
+				.padding(.trailing, 3)
+				.opacity(indicatorOpacity)
+				.allowsHitTesting(false)
+		}
+	}
+
 	private func stickToBottom(_ proxy: ScrollViewProxy) {
 		withAnimation(.linear(duration: 0.1)) {
 			proxy.scrollTo(
@@ -224,34 +279,37 @@ struct ListMessageView: TranscriptRendering {
 }
 
 private struct ThinScrollerConfigurator: NSViewRepresentable {
-	func makeCoordinator() -> LazyScroller { LazyScroller() }
+	func makeNSView(context: Context) -> ScrollProbe { ScrollProbe() }
 
-	func makeNSView(context: Context) -> NSView {
-		let probe = NSView(frame: .zero)
-		configureWhenReady(probe, scroller: context.coordinator, attemptsLeft: 8)
-		return probe
+	func updateNSView(_ probe: ScrollProbe, context: Context) {
+		probe.configure()
+	}
+}
+
+/// Rides in a row's background to reach the `List`'s underlying table.
+///
+/// Only the table dressing lives here now. The scroller is deliberately not
+/// touched: SwiftUI enforces its own NSScroller on this scroll view — a
+/// replacement seated here is evicted synchronously — so the indicator is
+/// handled above, in SwiftUI, where the List can't fight it.
+///
+/// `viewDidMoveToWindow` is the moment the row lands in the full hierarchy —
+/// synchronous, before the window paints the new transcript, so nothing set
+/// here arrives as a visible change on a transcript already drawn without it.
+private final class ScrollProbe: NSView {
+
+	override func viewDidMoveToWindow() {
+		super.viewDidMoveToWindow()
+		configure()
 	}
 
-	func updateNSView(_ nsView: NSView, context: Context) {
-		configureWhenReady(nsView, scroller: context.coordinator, attemptsLeft: 1)
-	}
+	func configure() {
+		guard let scrollView = enclosingScrollView else { return }
 
-	private func configureWhenReady(_ probe: NSView, scroller: LazyScroller, attemptsLeft: Int) {
-		guard attemptsLeft > 0 else { return }
-
-		DispatchQueue.main.async {
-			guard let scrollView = probe.enclosingScrollView else {
-				configureWhenReady(probe, scroller: scroller, attemptsLeft: attemptsLeft - 1)
-				return
-			}
-
-			scroller.attach(to: scrollView)
-
-			if let table = scrollView.documentView as? NSTableView {
-				table.gridStyleMask = []
-				table.gridColor = .clear
-				table.backgroundColor = .clear
-			}
+		if let table = scrollView.documentView as? NSTableView {
+			table.gridStyleMask = []
+			table.gridColor = .clear
+			table.backgroundColor = .clear
 		}
 	}
 }

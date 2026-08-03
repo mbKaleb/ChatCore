@@ -129,10 +129,6 @@ final class CompiledListViewController: NSViewController {
 	private var documentView: CompiledDocumentView!
 	private var clip: NSClipView { scrollView.contentView }
 
-	/// Keeps the scroller off the transcript until the user scrolls it — every
-	/// placement this controller performs is its own, not theirs.
-	private let lazyScroller = LazyScroller()
-
 	private var messages: [Message] = []
 	private var liveText: [UUID: String] = [:]
 
@@ -182,7 +178,7 @@ final class CompiledListViewController: NSViewController {
 
 		let scroll = OverlayScrollView()
 		scroll.hasHorizontalScroller = false
-		lazyScroller.attach(to: scroll)
+		LazyScroller.install(on: scroll)
 		scroll.drawsBackground = false
 		scroll.backgroundColor = .clear
 		scroll.automaticallyAdjustsContentInsets = false

@@ -21,6 +21,13 @@ final class QuietScroller: NSScroller {
 		}
 	}
 
+	/// Overlay compatibility is opt-in for a subclass that draws. Without this,
+	/// asking the scroll view for `.overlay` while this scroller is installed
+	/// is asking for a style AppKit considers unsafe with it, and the answer
+	/// is legacy — which is why assigning the style looked like it "didn't
+	/// stick": the scroller was vetoing it.
+	override class var isCompatibleWithOverlayScrollers: Bool { true }
+
 	override func draw(_ dirtyRect: NSRect) {
 		guard !isQuiet else { return }
 		super.draw(dirtyRect)
@@ -37,18 +44,10 @@ final class QuietScroller: NSScroller {
 	}
 }
 
-/// A scroll view whose scrollers float over the content, whatever the system
-/// preference says.
-///
-/// "Show scroll bars: Always" is a legacy scroller, and a legacy scroller takes
-/// its width out of the content rather than floating above it. Both AppKit
-/// transcript renderers lay out against `contentSize.width`, so that width
-/// arrives 13pt short the moment the scroller tiles — after the transcript has
-/// already been compiled at the full column. Every message then reflows to
-/// acknowledge a scrollbar, which is the shift.
-///
-/// Assigning `scrollerStyle` doesn't hold: AppKit re-reads the preference on
-/// every tile and puts it back. Owning the getter is what makes it stick.
+/// The transcript scroll views' own subclass, for the renderers that build
+/// theirs by hand. Owning the getter is the strongest pin there is — AppKit
+/// can re-read the system preference as often as it likes and always hear
+/// overlay — but it's only available to a class we get to declare.
 final class OverlayScrollView: NSScrollView {
 
 	override var scrollerStyle: NSScroller.Style {
@@ -57,83 +56,84 @@ final class OverlayScrollView: NSScrollView {
 	}
 }
 
-// A scroll view SwiftUI declares — `List`'s — can't be given this override.
-// Assigning `scrollerStyle` doesn't survive the next tile, and swapping the
-// instance onto a runtime subclass, the way KVO does, trips an AppKit responder
-// assertion and takes the app down. So the list renderers keep the system's
-// scroller style, and stay shift-free by leaving its width alone instead.
-
-/// Holds a transcript's vertical scroller back until someone actually scrolls it.
+/// Gives a transcript scroll view the scroller it should have had: overlay,
+/// thin, and silent until the user actually scrolls.
 ///
-/// AppKit flashes an overlay scroller whenever the content offset jumps, and
+/// Overlay because the alternative is structural. A legacy scroller — what
+/// "Show scroll bars: Always" installs — takes its width out of
+/// `contentSize`, the number every transcript renderer lays out against, so
+/// its arrival reflows every message on screen. An overlay scroller floats,
+/// and its width is only a look.
+///
+/// Quiet because AppKit flashes overlay scrollers at every content jump, and
 /// opening a chat jumps before anyone has touched anything: the transcript is
-/// placed at the offset it was left at, or stuck to the bottom, as its first act.
-/// The scroller that flashes over that is answering a scroll nobody performed.
+/// placed at the offset it was left at, or stuck to the bottom, as its first
+/// act. The scroller stays unpainted until a live scroll — the one event only
+/// a real gesture posts — and behaves normally from then on.
 ///
-/// There is no way to tell AppKit that a particular move wasn't the user's, so
-/// the scroller stays quiet until a live scroll proves otherwise — the one event
-/// only a real gesture posts. Every programmatic placement, opening a chat or
-/// sticking to the bottom mid-stream, is silent for as long as that holds.
+/// One instance runs per scroll view and is held by the scroll view itself,
+/// so the per-row probes in the SwiftUI list all land on the same controller
+/// instead of stacking one observer per visible row.
 @MainActor
-final class LazyScroller {
+final class LazyScroller: NSObject {
 
-	private var revealed = false
-
-	nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
-
-	deinit {
-		for observer in observers { NotificationCenter.default.removeObserver(observer) }
+	static func install(on scrollView: NSScrollView) {
+		if let installed = objc_getAssociatedObject(scrollView, &installedKey) as? LazyScroller {
+			installed.pin()
+			return
+		}
+		let controller = LazyScroller(scrollView)
+		objc_setAssociatedObject(scrollView, &installedKey, controller, .OBJC_ASSOCIATION_RETAIN)
+		controller.pin()
 	}
 
-	/// Give `scrollView` the transcript's scroller, quiet until earned.
-	///
-	/// Safe to call again, and meant to be: SwiftUI rebuilds its `List` scroll
-	/// view's scroller out from under this, so re-attaching on every update is
-	/// what keeps a replacement quiet too.
-	func attach(to scrollView: NSScrollView) {
-		scrollView.autohidesScrollers = true
+	private nonisolated(unsafe) static var installedKey: UInt8 = 0
 
-		// Mounted once and left mounted. Both AppKit transcript renderers lay out
-		// against `contentSize.width`, so a scroller that comes and goes is a
-		// column that comes and goes with it — every message reflowing to
-		// acknowledge a scrollbar.
+	private weak var scrollView: NSScrollView?
+	private var revealed = false
+	nonisolated(unsafe) private var revealWatch: NSObjectProtocol?
+
+	private init(_ scrollView: NSScrollView) {
+		self.scrollView = scrollView
+		super.init()
+
+		revealWatch = NotificationCenter.default.addObserver(
+			forName: NSScrollView.willStartLiveScrollNotification,
+			object: scrollView,
+			queue: .main
+		) { [weak self] _ in
+			MainActor.assumeIsolated { self?.reveal() }
+		}
+	}
+
+	deinit {
+		if let revealWatch { NotificationCenter.default.removeObserver(revealWatch) }
+	}
+
+	/// Everything this controller asserts, re-assertable in one move: overlay
+	/// style, autohide, and a quiet small scroller. Called on install, on every
+	/// style change AppKit makes, and whenever a probe re-runs.
+	func pin() {
+		guard let scrollView else { return }
+
+		if scrollView.scrollerStyle != .overlay {
+			scrollView.scrollerStyle = .overlay
+		}
+		scrollView.autohidesScrollers = true
 		scrollView.hasVerticalScroller = true
 
 		if !(scrollView.verticalScroller is QuietScroller) {
 			let quiet = QuietScroller()
-			// An overlay scroller floats, so its size is a look and `.small` is
-			// the transcript's. A legacy one is a column the content doesn't
-			// get, and re-sizing it hands those points back mid-layout with
-			// every message reflowing into them — the shift, wearing a different
-			// hat. So the thin look is taken only where it's free.
-			quiet.controlSize = scrollView.scrollerStyle == .overlay
-				? .small
-				: scrollView.verticalScroller?.controlSize ?? .small
+			quiet.controlSize = .small
+			quiet.isQuiet = !revealed
 			scrollView.verticalScroller = quiet
 		}
-
-		(scrollView.verticalScroller as? QuietScroller)?.isQuiet = !revealed
-
-		guard !revealed, observers.isEmpty else { return }
-
-		observers.append(
-			NotificationCenter.default.addObserver(
-				forName: NSScrollView.willStartLiveScrollNotification,
-				object: scrollView,
-				queue: .main
-			) { [weak self, weak scrollView] _ in
-				MainActor.assumeIsolated {
-					guard let self, let scrollView else { return }
-					self.reveal(in: scrollView)
-				}
-			}
-		)
-
 	}
 
 	/// Hand the scroller over, from the start of the gesture that asked for it.
-	private func reveal(in scrollView: NSScrollView) {
+	///
+	private func reveal() {
 		revealed = true
-		(scrollView.verticalScroller as? QuietScroller)?.isQuiet = false
+		(scrollView?.verticalScroller as? QuietScroller)?.isQuiet = false
 	}
 }
