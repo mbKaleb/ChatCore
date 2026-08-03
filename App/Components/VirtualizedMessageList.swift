@@ -198,6 +198,10 @@ final class MessageListViewController: NSViewController {
 	private var column: NSTableColumn!
 	private var clip: NSClipView { scrollView.contentView }
 
+	/// Keeps the scroller off the transcript until the user scrolls it — every
+	/// placement this controller performs is its own, not theirs.
+	private let lazyScroller = LazyScroller()
+
 	private var lastLayoutWidth: CGFloat = 0
 	private var didInitialScroll = false
 
@@ -310,12 +314,9 @@ final class MessageListViewController: NSViewController {
 		self.tableView = table
 		self.column = col
 
-		let scroll = NSScrollView()
-		scroll.hasVerticalScroller = true
+		let scroll = OverlayScrollView()
 		scroll.hasHorizontalScroller = false
-		scroll.autohidesScrollers = true
-		scroll.scrollerStyle = .overlay
-		scroll.verticalScroller?.controlSize = .small
+		lazyScroller.attach(to: scroll)
 		scroll.drawsBackground = false
 		scroll.backgroundColor = .clear
 		scroll.automaticallyAdjustsContentInsets = false

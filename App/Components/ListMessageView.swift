@@ -224,29 +224,28 @@ struct ListMessageView: TranscriptRendering {
 }
 
 private struct ThinScrollerConfigurator: NSViewRepresentable {
+	func makeCoordinator() -> LazyScroller { LazyScroller() }
+
 	func makeNSView(context: Context) -> NSView {
 		let probe = NSView(frame: .zero)
-		configureWhenReady(probe, attemptsLeft: 8)
+		configureWhenReady(probe, scroller: context.coordinator, attemptsLeft: 8)
 		return probe
 	}
 
 	func updateNSView(_ nsView: NSView, context: Context) {
-		configureWhenReady(nsView, attemptsLeft: 1)
+		configureWhenReady(nsView, scroller: context.coordinator, attemptsLeft: 1)
 	}
 
-	private func configureWhenReady(_ probe: NSView, attemptsLeft: Int) {
+	private func configureWhenReady(_ probe: NSView, scroller: LazyScroller, attemptsLeft: Int) {
 		guard attemptsLeft > 0 else { return }
 
 		DispatchQueue.main.async {
 			guard let scrollView = probe.enclosingScrollView else {
-				configureWhenReady(probe, attemptsLeft: attemptsLeft - 1)
+				configureWhenReady(probe, scroller: scroller, attemptsLeft: attemptsLeft - 1)
 				return
 			}
 
-			scrollView.scrollerStyle = .overlay
-			scrollView.hasVerticalScroller = true
-			scrollView.autohidesScrollers = true
-			scrollView.verticalScroller?.controlSize = .small
+			scroller.attach(to: scrollView)
 
 			if let table = scrollView.documentView as? NSTableView {
 				table.gridStyleMask = []

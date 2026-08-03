@@ -232,6 +232,15 @@ private struct ConversationList: View {
 			}
 		}
 		.task(id: search) { await rebuildSnippets(for: search) }
+		#if DEBUG
+		// `-seedLargeChat` exists to put a big transcript on screen, and a seeded
+		// chat nobody opens is a sidebar row. Open it.
+		.task {
+			guard DebugSeed.isRequested, selectedIDs.isEmpty else { return }
+			guard let first = conversations.first else { return }
+			selectedIDs = [first.id]
+		}
+		#endif
 		.onChange(of: focus) { _, focus in
 			guard focus == .list, !search.isEmpty, selectedIDs.isEmpty else { return }
 			guard let first = conversations.first else { return }
