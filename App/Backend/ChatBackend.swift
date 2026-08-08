@@ -105,5 +105,32 @@ nonisolated struct ChatOptions: Sendable {
 
 nonisolated enum ChatBackendError: Error {
 	case modelUnavailable(GenerativeChatModel.ID)
+
+	/// The current message alone outsizes the model's context window — no
+	/// amount of shedding older turns can make this send fit.
+	case promptTooLarge
+
+	/// The context window ran out while the answer was streaming. The partial
+	/// answer is already on screen, so no retry can fix it quietly.
+	case contextWindowFull
+
 	case notImplemented
+}
+
+/// What the user reads when one of these surfaces. The raw framework
+/// descriptions talk about token counts and exceeded sizes; nobody who hasn't
+/// read this file deserves those.
+nonisolated extension ChatBackendError: LocalizedError {
+	var errorDescription: String? {
+		switch self {
+		case .modelUnavailable:
+			"That model isn't available right now."
+		case .promptTooLarge:
+			"This message doesn't fit in the model's context window, even with older messages set aside. Shorten it, remove attachments, or switch to a model with a larger window."
+		case .contextWindowFull:
+			"The model ran out of context window mid-answer, so the reply may be incomplete. Ask for less at once, or switch to a model with a larger window."
+		case .notImplemented:
+			"This backend doesn't support that yet."
+		}
+	}
 }

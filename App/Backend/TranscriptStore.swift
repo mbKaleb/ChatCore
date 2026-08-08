@@ -88,6 +88,16 @@ actor TranscriptStore {
 		order.removeAll { $0 == key }
 	}
 
+	/// Drop everything.
+	///
+	/// Called under memory pressure: cached transcripts — image attachments
+	/// included — are the one thing here the app can hand back voluntarily.
+	/// The next send rebuilds from turns, exactly as a cold cache would.
+	func flush() {
+		entries.removeAll()
+		order.removeAll()
+	}
+
 	// MARK: - Internals
 
 	private func touch(_ key: Key) {

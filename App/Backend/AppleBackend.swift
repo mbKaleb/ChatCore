@@ -127,7 +127,9 @@ struct AppleBackend: ChatBackend {
 		}
 		do {
 			let session = LanguageModelSession()
-			session.prewarm()
+			if !MemoryPressureMonitor.shared.isConstrained {
+				session.prewarm()
+			}
 			_ = try await session.respond(
 				to: ConnectionProbe.prompt,
 				options: GenerationOptions(maximumResponseTokens: ConnectionProbe.maximumResponseTokens)
@@ -204,38 +206,126 @@ struct AppleBackend: ChatBackend {
 			TranscriptStore.Key(conversation: $0, route: Route(model).cacheTag)
 		}
 
-		let base: Transcript
+		var base: Transcript
 		if let key, let cached = await TranscriptStore.shared.cached(for: key, history: history) {
 			base = cached
 		} else {
 			base = history.transcript()
 		}
 
-		var yielded = false
-		var answer = ""
-		do {
-			let ended = try await stream(prompt, from: base, model: model, options: options) {
-				yielded = true
-				answer = $0
-				continuation.yield($0)
-			}
-			await commit(ended, for: key, answering: turns, with: answer)
-		} catch {
-			if let key { await TranscriptStore.shared.invalidate(key) }
+		// Fit the send to the window before the model ever sees it. Overflow
+		// is not discovered cheaply: the error only comes back after a full
+		// prompt-processing pass — the most memory-hungry work a turn does —
+		// so a conversation that has outgrown the window would pay that pass
+		// on every send just to fail it. Shedding up front spends the
+		// estimate's imprecision on one old turn instead.
+		var options = options
+		let budget = await contextBudget(for: model, options: options)
+		if let budget {
+			let overrun = base.estimatedTokens + current.estimatedPromptTokens
+				- budget.promptAllowance
+			if overrun > 0 {
+				base = base.shedding(tokens: overrun)
 
-			// Overflow is the one failure with a local remedy: the prompt didn't
-			// fit, so shed the oldest turns and ask again. Worth doing only
-			// before anything reached the screen — a retry after tokens have
-			// streamed restarts the answer mid-sentence in front of the user.
-			guard !yielded, let overflow = error.contextOverflow else { throw error }
-
-			let trimmed = base.shedding(tokens: overflow.tokenCount - overflow.contextSize)
-			let ended = try await stream(prompt, from: trimmed, model: model, options: options) {
-				answer = $0
-				continuation.yield($0)
+				// Refusing outright is reserved for certainty. The estimate
+				// is rough and the allowance is deliberately stricter than
+				// the window, so a send that merely estimates over still gets
+				// attempted — the real tokenizer has the last word, through
+				// the retry loop below. Only a message whose text alone
+				// outsizes the whole unmargined window is refused without
+				// paying a prompt pass, because no shed can ever make it fit.
+				let irreducible = base.estimatedTokens
+					+ TokenEstimate.tokens(forCharacters: current.content.count)
+				guard irreducible <= budget.contextSize else {
+					throw ChatBackendError.promptTooLarge
+				}
 			}
-			await commit(ended, for: key, answering: turns, with: answer)
+			if Route(model) == .device {
+				// Generation shares the window with the prompt, and the
+				// device window is small enough for an answer to run it out
+				// mid-sentence — the one overflow a retry can't hide. Cap the
+				// answer at whatever the (post-shed) prompt actually left,
+				// never less than the budget's reserve; a user-set ceiling is
+				// honored by clamping, not just in the budget's arithmetic.
+				let spent = base.estimatedTokens + current.estimatedPromptTokens
+				let headroom = max(budget.responseReserve, budget.usableTokens - spent)
+				options.maxResponseTokens = min(options.maxResponseTokens ?? headroom, headroom)
+			}
 		}
+
+		var attempt = 0
+		while true {
+			var yielded = false
+			var answer = ""
+			do {
+				let ended = try await stream(prompt, from: base, model: model, options: options) {
+					// An empty snapshot puts nothing on screen, so it doesn't
+					// spend the retry — only visible text does.
+					if !$0.isEmpty { yielded = true }
+					answer = $0
+					continuation.yield($0)
+				}
+				await commit(ended, for: key, answering: turns, with: answer)
+				return
+			} catch {
+				if let key { await TranscriptStore.shared.invalidate(key) }
+
+				// Overflow is the one failure with a local remedy: the prompt
+				// didn't fit, so shed the oldest turns and ask again.
+				guard let overflow = error.contextOverflow else { throw error }
+
+				// ...but only before anything reached the screen — a retry
+				// after tokens have streamed restarts the answer mid-sentence
+				// in front of the user. The window simply ran out mid-answer,
+				// and saying so beats a framework error.
+				guard !yielded else { throw ChatBackendError.contextWindowFull }
+
+				attempt += 1
+				guard attempt <= Self.overflowRetryLimit else {
+					throw ChatBackendError.promptTooLarge
+				}
+
+				// Shed to the same target the pre-flight aims for — margin and
+				// response reserve included. A prompt trimmed to just under
+				// the raw window leaves the answer no room and merely trades
+				// this overflow for one mid-answer. Scaled up each failed
+				// attempt since the estimate already missed once, floored at
+				// one token so a boundary report still makes progress, and
+				// abandoned the moment shedding stops shrinking the
+				// transcript: retrying an unchanged prompt can only fail the
+				// same way.
+				let target = budget?.promptAllowance ?? overflow.contextSize
+				let deficit = max(overflow.tokenCount - target, 1) * attempt
+				let trimmed = base.shedding(tokens: deficit)
+				guard trimmed.count < base.count else {
+					throw ChatBackendError.promptTooLarge
+				}
+				base = trimmed
+			}
+		}
+	}
+
+	/// How many overflow retries one send may spend before the failure is
+	/// declared structural rather than an estimation miss.
+	private static let overflowRetryLimit = 2
+
+	/// The window this send must fit inside, when the route can name its size.
+	///
+	/// The device asks the framework for its real window where it can — the
+	/// static number is a floor for older systems, and budgeting against a
+	/// wrong window sheds turns the model had room for.
+	private func contextBudget(
+		for model: GenerativeChatModel,
+		options: ChatOptions
+	) async -> ContextBudget? {
+		var size = model.contextWindowTokens
+		#if compiler(>=6.4)
+		if #available(macOS 27.0, *), Route(model) == .device {
+			size = await DeviceContextSize.shared.value()
+		}
+		#endif
+		guard let size, size > 0 else { return nil }
+		return ContextBudget(contextSize: size, requestedResponseTokens: options.maxResponseTokens)
 	}
 
 	/// File the ending transcript under the turns it will arrive as next time.
@@ -277,7 +367,11 @@ struct AppleBackend: ChatBackend {
 		onSnapshot: (String) -> Void
 	) async throws -> Transcript {
 		let session = try makeSession(for: model, transcript: transcript)
-		session.prewarm()
+		// Prewarming trades memory now for latency later; under pressure that
+		// trade runs the wrong way. The model still loads on demand.
+		if !MemoryPressureMonitor.shared.isConstrained {
+			session.prewarm()
+		}
 		let stream = session.streamResponse(to: prompt, options: options.generationOptions)
 		for try await partial in stream {
 			onSnapshot(partial.content)
@@ -320,69 +414,6 @@ private extension Error {
 		else { return nil }
 		return (info.contextSize, info.tokenCount)
 	}
-}
-
-extension Transcript {
-
-	/// Drop the oldest turns until roughly `tokens` worth of them are gone.
-	///
-	/// Instructions stay. They are the app's own rules, and dropping them to
-	/// save a few tokens changes what the model *is* rather than what it
-	/// remembers. Everything else goes oldest first and in whole entries —
-	/// half a response is worse context than none of it.
-	func shedding(tokens: Int) -> Transcript {
-		guard tokens > 0 else { return self }
-
-		var entries = Array(self)
-		var preamble: [Transcript.Entry] = []
-		if let first = entries.first, case .instructions = first {
-			preamble.append(entries.removeFirst())
-		}
-
-		// No per-entry token count is exposed, so this estimates from characters
-		// and overshoots on purpose: landing under the limit on the one retry
-		// matters more than keeping one extra turn.
-		var budget = Double(tokens) * Self.charactersPerToken * Self.overshoot
-		while budget > 0, !entries.isEmpty {
-			budget -= Double(entries.removeFirst().estimatedCharacters)
-		}
-
-		// A response whose prompt just went is a reply to nothing. Drop it too,
-		// rather than leave the model reading its own words as the opener.
-		if let first = entries.first, case .response = first {
-			entries.removeFirst()
-		}
-
-		return Transcript(entries: preamble + entries)
-	}
-
-	private static let charactersPerToken = 4.0
-	private static let overshoot = 1.25
-}
-
-private extension Transcript.Entry {
-
-	/// Text length, with a flat charge for anything that isn't text.
-	var estimatedCharacters: Int {
-		let segments: [Transcript.Segment]
-		switch self {
-		case .instructions(let entry): segments = entry.segments
-		case .prompt(let entry):       segments = entry.segments
-		case .response(let entry):     segments = entry.segments
-		case .reasoning(let entry):    segments = entry.segments
-		case .toolCalls, .toolOutput:  return Self.nonTextCharacters
-		@unknown default:              return Self.nonTextCharacters
-		}
-		return segments.reduce(0) { total, segment in
-			if case .text(let text) = segment { return total + text.content.count }
-			return total + Self.nonTextCharacters
-		}
-	}
-
-	/// What one image is worth in characters. Rough on purpose — it only has to
-	/// be the right order of magnitude to stop a transcript full of screenshots
-	/// from shedding nothing.
-	private static let nonTextCharacters = 4 * 1024
 }
 
 // MARK: - Options Mapping
