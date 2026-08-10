@@ -8,26 +8,86 @@ import SwiftData
 
 // MARK: - Focused Menu Actions
 
-struct DeleteConversationsAction {
-	var isEnabled: Bool
-	var perform: () -> Void
+/// Focused values must be `Equatable` or every body re-run of the publishing
+/// view counts as a new value — and a body that runs twice in one frame (a
+/// delete touches selection, the query, and focus in the same event) then trips
+/// "FocusedValue update tried to update multiple times per frame". Two of these
+/// always compare equal: the closure is re-created each body run but reads live
+/// state through its captured property wrappers, so a new instance is never a
+/// semantic change.
+/// ⌘T: a tab, and an empty one.
+///
+/// Nothing here starts a chat — the tab comes up on "Select or start a
+/// conversation", the same as a new window does. Whether the window lands in the
+/// tab group isn't decided here either; that is `TabbingPolicy`'s business,
+/// settled by the window's own `tabbingMode` before AppKit orders it in.
+@MainActor
+enum NewTabIntent {
+
+	/// Kept as a function rather than spelled out in the menu item so
+	/// `-newTabProbe` exercises this exact path instead of a copy that can fall
+	/// behind.
+	@discardableResult
+	static func open() -> Bool {
+		NSApp.sendAction(#selector(NSWindow.newWindowForTab(_:)), to: nil, from: nil)
+	}
 }
 
-private struct NewChatKey: FocusedValueKey { typealias Value = () -> Void }
-private struct ToggleSidebarKey: FocusedValueKey { typealias Value = () -> Void }
-private struct FindChatKey: FocusedValueKey { typealias Value = () -> Void }
+/// ⌘⇧N: a window, not a tab, and an empty one.
+@MainActor
+enum NewWindowIntent {
+
+	/// `TabbingPolicy` marks windows `.preferred`, which is a property of the
+	/// window and not of the command that opened it — so AppKit can't tell New
+	/// Window from New Tab by itself, and left alone it files both into the
+	/// group. Automatic tabbing goes off for exactly as long as the window takes
+	/// to appear, which SwiftUI builds synchronously inside `openWindow`, so the
+	/// suppression spans this one statement and can't leak to anything else.
+	static func open(_ openWindow: OpenWindowAction) {
+		let wasAllowed = NSWindow.allowsAutomaticWindowTabbing
+		NSWindow.allowsAutomaticWindowTabbing = false
+		defer { NSWindow.allowsAutomaticWindowTabbing = wasAllowed }
+		openWindow(id: "main")
+	}
+}
+
+struct FocusedAction: Equatable {
+	var perform: () -> Void
+
+	init(_ perform: @escaping () -> Void) { self.perform = perform }
+
+	static func == (lhs: Self, rhs: Self) -> Bool { true }
+}
+
+struct DeleteConversationsAction: Equatable {
+	var isEnabled: Bool
+	var perform: () -> Void
+
+	// `isEnabled` is the only part the menu renders; see `FocusedAction` for
+	// why the closure doesn't participate.
+	static func == (lhs: Self, rhs: Self) -> Bool { lhs.isEnabled == rhs.isEnabled }
+}
+
+private struct NewChatKey: FocusedValueKey { typealias Value = FocusedAction }
+private struct ToggleSidebarKey: FocusedValueKey { typealias Value = FocusedAction }
+private struct FindChatKey: FocusedValueKey { typealias Value = FocusedAction }
 private struct DeleteConversationsKey: FocusedValueKey { typealias Value = DeleteConversationsAction }
+private struct RefreshViewKey: FocusedValueKey { typealias Value = FocusedAction }
 
 extension FocusedValues {
-	var newChat: (() -> Void)? {
+	var newChat: FocusedAction? {
 		get { self[NewChatKey.self] }
 		set { self[NewChatKey.self] = newValue }
 	}
-	var toggleSidebar: (() -> Void)? {
+	var refreshView: FocusedAction? {
+		get { self[RefreshViewKey.self] }
+		set { self[RefreshViewKey.self] = newValue }
+	}
+	var toggleSidebar: FocusedAction? {
 		get { self[ToggleSidebarKey.self] }
 		set { self[ToggleSidebarKey.self] = newValue }
 	}
-	var findChat: (() -> Void)? {
+	var findChat: FocusedAction? {
 		get { self[FindChatKey.self] }
 		set { self[FindChatKey.self] = newValue }
 	}
@@ -48,21 +108,38 @@ extension FocusedValues {
 struct AppView: View {
 
 	@Environment(\.modelContext) private var modelContext
+	@Environment(ModelManager.self) private var manager
 	@AppStorage(Defaults.Key.defaultModelID) private var defaultModelID = GenerativeChatModel.onDevice.id
 
+	#if DEBUG
+	@Environment(\.openWindow) private var openWindow
+	#endif
+
 	@State private var model = AppModel()
+
+	/// Bumped by ⌘R. The only value this body reads that changes at runtime —
+	/// which is the point: a refresh *is* a rebuild of everything below, and
+	/// nothing else should be able to cause one.
+	@State private var refreshToken = 0
 
 	var body: some View {
 		let _ = Self.printChanges()
 		@Bindable var model = model
 		NavigationSplitView(columnVisibility: $model.columnVisibility) {
 			ConversationSidebar(onNewConversation: newConversation)
+				.id(refreshToken)
 		} detail: {
 			ConversationDetail()
 				.scrollEdgeEffectHidden(true, for: .top)
+				.id(refreshToken)
 		}
-		.environment(model)
 		.task {
+			#if DEBUG
+			// Lets `-newTabProbe` press New Window too. `openWindow` is a
+			// SwiftUI environment action with no AppKit equivalent to send, so
+			// the probe can only reach ⌘⇧N through a handle the scene hands it.
+			WindowProbeHooks.openNewWindow = { NewWindowIntent.open(openWindow) }
+			#endif
 			if FileManager.default.ubiquityIdentityToken == nil {
 				model.promptICloudSignIn = true
 			}
@@ -77,13 +154,50 @@ struct AppView: View {
 		} message: {
 			Text("Private Cloud needs your Apple Account. On-device chat works either way.")
 		}
-		.focusedSceneValue(\.newChat, newConversation)
-		.focusedSceneValue(\.toggleSidebar, model.toggleSidebar)
-		.background { TextSizeShortcuts() }
+		.focusedSceneValue(\.newChat, FocusedAction(newConversation))
+		.focusedSceneValue(\.toggleSidebar, FocusedAction(model.toggleSidebar))
+		.focusedSceneValue(\.refreshView, FocusedAction(refresh))
+		.background {
+			TextSizeShortcuts()
+			TabShortcuts()
+			TabbingPolicy()
+			if !ProcessInfo.processInfo.arguments.contains("-noTabBarChrome") {
+				TabBarChrome()
+			}
+			if !ProcessInfo.processInfo.arguments.contains("-noTabActivity") {
+				TabActivity()
+			}
+		}
+		.environment(model)
 	}
 
 	private func newConversation() {
 		model.newConversation(in: modelContext, defaultModelID: defaultModelID)
+		if let chatModel = manager.model(withID: defaultModelID) {
+			manager.prewarm(chatModel)
+		}
+	}
+
+	/// Rebuild both columns from scratch, keeping everything that isn't a view.
+	///
+	/// Deliberately the *view* only. A turn in flight is an unstructured task
+	/// that writes through `ModelManager` and the `Conversation` object, neither
+	/// of which lives in the view tree, so tearing the tree down doesn't
+	/// interrupt it — the rebuilt transcript picks the stream back up from
+	/// `liveText` on its first frame. `AppModel` survives for the same reason:
+	/// selection, drafts and the split pane are state, not rendering. The
+	/// compose bar's contents make the round trip through the draft stash, which
+	/// `ChatView` already does on every appear and disappear.
+	///
+	/// The caches go with it. They exist to make a *destroyed* view cheap to
+	/// rebuild — restoring a compiled document or a parsed markdown tree is
+	/// exactly what a refresh is asking not to happen, since the reason to press
+	/// ⌘R is that what's on screen is wrong.
+	private func refresh() {
+		CompiledDocumentCache.removeAll()
+		MarkdownContentCache.removeAll()
+		MathCache.removeAll()
+		refreshToken &+= 1
 	}
 }
 
@@ -149,12 +263,13 @@ private struct ConversationSidebar: View {
 			debouncedSearch = pending
 		}
 		.navigationSplitViewColumnWidth(min: 235, ideal: 260, max: 320)
-		.focusedSceneValue(\.findChat) { focus = .search }
+		.focusedSceneValue(\.findChat, FocusedAction { focus = .search })
 	}
 }
 
 private struct ConversationList: View {
 	@Environment(\.modelContext) private var modelContext
+	@Environment(AppModel.self) private var model
 	@Query private var conversations: [Conversation]
 
 	private let search: String
@@ -221,6 +336,7 @@ private struct ConversationList: View {
 					}
 					.frame(maxWidth: .infinity, alignment: .leading)
 					.background(RowDoubleClickHandler(onDoubleClick: beginRename(rowIndex:)))
+					.draggable(ConversationDragItem(id: convo.id))
 				}
 			}
 			.tag(convo.id)
@@ -232,15 +348,6 @@ private struct ConversationList: View {
 			}
 		}
 		.task(id: search) { await rebuildSnippets(for: search) }
-		#if DEBUG
-		// `-seedLargeChat` exists to put a big transcript on screen, and a seeded
-		// chat nobody opens is a sidebar row. Open it.
-		.task {
-			guard DebugSeed.isRequested, selectedIDs.isEmpty else { return }
-			guard let first = conversations.first else { return }
-			selectedIDs = [first.id]
-		}
-		#endif
 		.onChange(of: focus) { _, focus in
 			guard focus == .list, !search.isEmpty, selectedIDs.isEmpty else { return }
 			guard let first = conversations.first else { return }
@@ -344,6 +451,7 @@ private struct ConversationList: View {
 
 	private func deleteSelected() {
 		let doomed = visibleSelection
+		model.conversationsWillBeDeleted(doomed.map(\.id))
 		selectedIDs.subtract(doomed.map(\.id))
 		for convo in doomed { modelContext.delete(convo) }
 	}
@@ -374,22 +482,55 @@ private struct RowDoubleClickHandler: NSViewRepresentable {
 				attach(probe, coordinator: coordinator, attemptsLeft: attemptsLeft - 1)
 				return
 			}
-			table.target = coordinator
+			if table.target !== coordinator {
+				// Every row installs a handler on the same table, so the
+				// displaced target may be a sibling Coordinator. Inherit the
+				// real target it saved instead of chaining coordinators —
+				// two of them forwarding to each other recurses forever in
+				// `responds(to:)`.
+				if let peer = table.target as? Coordinator {
+					coordinator.originalTarget = peer.originalTarget
+				} else {
+					coordinator.originalTarget = table.target as AnyObject?
+				}
+				table.target = coordinator
+			}
 			table.doubleAction = #selector(Coordinator.handleDoubleClick(_:))
 		}
 	}
 
-	final class Coordinator: NSObject {
+	@MainActor final class Coordinator: NSObject {
 		var onDoubleClick: (Int) -> Void
+
+		/// SwiftUI's own table target, displaced when we install ourselves.
+		/// The table has a single `target` shared by `action` and
+		/// `doubleAction`, so its single-click action (`onAction:`) lands here;
+		/// anything we don't handle is forwarded back to keep List selection
+		/// working.
+		nonisolated(unsafe) weak var originalTarget: AnyObject?
 
 		init(onDoubleClick: @escaping (Int) -> Void) {
 			self.onDoubleClick = onDoubleClick
 		}
 
-		@objc func handleDoubleClick(_ sender: NSTableView) {
+		nonisolated override func responds(to aSelector: Selector!) -> Bool {
+			super.responds(to: aSelector) || (originalTarget?.responds(to: aSelector) ?? false)
+		}
+
+		nonisolated override func forwardingTarget(for aSelector: Selector!) -> Any? {
+			if let originalTarget, originalTarget.responds(to: aSelector) {
+				return originalTarget
+			}
+			return super.forwardingTarget(for: aSelector)
+		}
+
+		// Isolated as a whole rather than hopping inside: AppKit fires
+		// target-actions on the main thread, and the annotation is what lets
+		// the compiler see that instead of taking `self` across a boundary.
+		@objc @MainActor func handleDoubleClick(_ sender: NSTableView) {
 			let row = sender.clickedRow
 			guard row >= 0 else { return }
-			MainActor.assumeIsolated { onDoubleClick(row) }
+			onDoubleClick(row)
 		}
 	}
 }
@@ -411,24 +552,40 @@ private struct ConversationDetail: View {
 	/// told to use and leaves where that came from to its caller.
 	@AppStorage(Defaults.Key.transcriptRenderer) private var rendererID = TranscriptRenderer.default.rawValue
 
+	@State private var splitDropTargeted = false
+
 	var body: some View {
 		let _ = Self.printChanges()
-		ZStack {
-			if model.selectedIDs.count > 1 {
-				Text("\(model.selectedIDs.count) conversations selected")
-					.foregroundStyle(.secondary)
-			} else if let conversation = model.selectedConversation {
-				ChatView(
-					conversation: conversation,
+		HSplitView {
+			primaryPane
+				.frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+				.layoutPriority(1)
+
+			if let secondary = model.secondaryConversation {
+				SecondaryChatPane(
+					conversation: secondary,
 					renderer: TranscriptRenderer(storedID: rendererID)
 				)
-			} else {
-				Text("Select or start a conversation")
-					.foregroundStyle(.secondary)
+				.frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
 			}
 		}
 		.frame(maxWidth: .infinity, maxHeight: .infinity)
-		.frame(minWidth: 480, minHeight: 360)
+		// Matches the pane minimum rather than exceeding it: the window is
+		// `.contentMinSize`, so anything larger here becomes a floor the sidebar
+		// then adds 235pt to. One pane bottoms out at 320, two at 640.
+		.frame(minWidth: 320, minHeight: 360)
+		// On the whole column rather than a right-edge strip: the payload type
+		// is what routes the drop, not where it lands. Files and text keep
+		// falling through to `ChatView`'s own drop handling — nothing there
+		// accepts a conversation, and nothing here accepts anything else.
+		.dropDestination(for: ConversationDragItem.self) { items, _ in
+			guard let item = items.first else { return false }
+			return model.openSecondary(id: item.id, in: modelContext)
+		} isTargeted: { splitDropTargeted = $0 }
+		.overlay {
+			if splitDropTargeted { SplitDropHint() }
+		}
+		.animation(.easeInOut(duration: 0.15), value: splitDropTargeted)
 		// Resolved here rather than one level up: this is the view that renders
 		// the result, so the read of `selectedIDs` it costs is one this body
 		// already owes. On `AppView` it was a dependency bought for nothing.
@@ -444,6 +601,91 @@ private struct ConversationDetail: View {
 				StatusIndicatorItem(conversation: model.selectedConversation)
 			}
 		}
+	}
+
+	private var primaryPane: some View {
+		ZStack {
+			if model.selectedIDs.count > 1 {
+				Text("\(model.selectedIDs.count) conversations selected")
+					.foregroundStyle(.secondary)
+			} else if let conversation = model.selectedConversation {
+				ChatView(
+					conversation: conversation,
+					renderer: TranscriptRenderer(storedID: rendererID)
+				)
+			} else {
+				Text("Select or start a conversation")
+					.foregroundStyle(.secondary)
+			}
+		}
+	}
+}
+
+/// The pinned half of the split: a full `ChatView` under a slim header naming
+/// the chat, with the one control the pane needs — closing it. The sidebar's
+/// selection never points here; the header is what says which chat this is.
+private struct SecondaryChatPane: View {
+	@Environment(AppModel.self) private var model
+	var conversation: Conversation
+	var renderer: TranscriptRenderer
+
+	var body: some View {
+		ChatView(conversation: conversation, renderer: renderer)
+			.safeAreaInset(edge: .top, spacing: 0) { header }
+	}
+
+	private var header: some View {
+		HStack(spacing: 8) {
+			// Reads the live title, so a rename or auto-title lands here too.
+			Text(conversation.title)
+				.font(.callout.weight(.medium))
+				.lineLimit(1)
+
+			Spacer(minLength: 8)
+
+			Button {
+				model.closeSecondary()
+			} label: {
+				Image(systemName: "xmark")
+					.font(.caption.weight(.semibold))
+					.frame(width: 20, height: 20)
+					.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.foregroundStyle(.secondary)
+			.help("Close Split View")
+		}
+		.padding(.horizontal, 12)
+		.padding(.vertical, 6)
+		.background(.bar)
+		.overlay(alignment: .bottom) { Divider() }
+	}
+}
+
+/// What a sidebar drag sees while it hovers: the right half lights up as the
+/// pane the drop will fill. Purely indicative — the drop itself is accepted by
+/// the column underneath, wherever it lands.
+private struct SplitDropHint: View {
+	var body: some View {
+		HStack(spacing: 0) {
+			Color.clear
+
+			ZStack {
+				RoundedRectangle(cornerRadius: 16)
+					.fill(Color.accentColor.opacity(0.1))
+				RoundedRectangle(cornerRadius: 16)
+					.strokeBorder(
+						Color.accentColor.opacity(0.5),
+						style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])
+					)
+				Label("Open Side by Side", systemImage: "rectangle.split.2x1")
+					.font(.headline)
+					.foregroundStyle(Color.accentColor)
+			}
+			.padding(10)
+		}
+		.allowsHitTesting(false)
+		.transition(.opacity)
 	}
 }
 

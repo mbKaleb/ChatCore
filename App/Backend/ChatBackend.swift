@@ -25,7 +25,23 @@ protocol ChatBackend: Sendable {
 		to turns: [ChatTurn],
 		model: GenerativeChatModel,
 		options: ChatOptions
-	) -> AsyncThrowingStream<String, Error>
+	) -> AsyncThrowingStream<ReplyEvent, Error>
+}
+
+// MARK: - Reply Stream Events
+
+/// One update from a turn in flight. Both cases carry the whole text so far,
+/// not a delta — the same cumulative-snapshot contract the stream has always
+/// had, extended to name which channel a snapshot belongs to.
+nonisolated enum ReplyEvent: Sendable {
+
+	/// The model's reasoning so far. Streams before — and, with multiple
+	/// thinking blocks, between — the answer's own tokens. Models that don't
+	/// reason simply never send one.
+	case thinking(String)
+
+	/// The answer so far.
+	case content(String)
 }
 
 // MARK: - Connection Probe

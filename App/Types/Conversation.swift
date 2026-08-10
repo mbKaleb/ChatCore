@@ -9,9 +9,15 @@ import Foundation
 
 @Model
 class Conversation {
+
+	/// The placeholder a chat is born with, replaced by the generated title
+	/// after the first exchange. Named because it doubles as a sentinel: the
+	/// title generator only runs on chats still carrying it.
+	static let untitledTitle = "New Chat"
+
 	var id: UUID = UUID()
 	var createdAt: Date = Date()
-	var title: String = "New Chat"
+	var title: String = Conversation.untitledTitle
 
 	var modelID: String = GenerativeChatModel.onDevice.id
 

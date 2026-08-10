@@ -19,6 +19,12 @@ nonisolated enum APIKeyVerdict: Sendable, Equatable {
 	/// The vendor answered and refused the key.
 	case rejected
 
+	/// The key authenticated, but the account behind it isn't entitled to what
+	/// was asked — no credits, no license, a region or tier that doesn't carry
+	/// the endpoint. Nothing about retyping the key fixes any of those, so the
+	/// vendor's own words travel with the verdict and get shown verbatim.
+	case forbidden(message: String?)
+
 	/// Nobody answered, or answered with something that isn't about the key —
 	/// a rate limit, an outage, an endpoint that moved.
 	case unreachable
@@ -55,14 +61,18 @@ nonisolated enum APIKeyValidator {
 		// 60-second default.
 		request.timeoutInterval = 15
 
-		guard let (_, response) = try? await URLSession.shared.data(for: request),
+		guard let (data, response) = try? await URLSession.shared.data(for: request),
 		      let http = response as? HTTPURLResponse else {
 			return .unreachable
 		}
 
 		switch http.statusCode {
 		case 200...299: return .valid
-		case 401, 403:  return .rejected
+		// 401 is about the key; 403 is about what the account may do with it.
+		// Collapsing them sends someone off to retype a key that was never the
+		// problem.
+		case 401:       return .rejected
+		case 403:       return .forbidden(message: OpenAIErrorEnvelope.message(in: data))
 		default:        return .unreachable
 		}
 	}

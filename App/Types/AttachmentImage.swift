@@ -50,7 +50,9 @@ nonisolated enum AttachmentImage {
 		guard
 			let width = properties?[kCGImagePropertyPixelWidth] as? Int,
 			let height = properties?[kCGImagePropertyPixelHeight] as? Int,
-			width > 0, height > 0
+			// The upper bound keeps `width * height` below, and anything derived
+			// from it, safely inside Int — metadata is attacker-supplied.
+			width > 0, height > 0, width <= 1 << 20, height <= 1 << 20
 		else { return nil }
 
 		let orientation = properties?[kCGImagePropertyOrientation] as? UInt32 ?? 1

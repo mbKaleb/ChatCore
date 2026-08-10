@@ -50,6 +50,14 @@ enum MarkdownContentCache {
 		return parsed
 	}
 
+	/// Drop everything. Only a refresh asks for this: entries already
+	/// self-invalidate against the source text, so the one thing this clears
+	/// that time wouldn't is a tree parsed by code that has since changed.
+	static func removeAll() {
+		storage.removeAll()
+		order.removeAll()
+	}
+
 	private static func evictOverflow() {
 		let overflow = order.count - capacity
 		guard overflow > 0 else { return }

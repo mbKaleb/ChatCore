@@ -12,7 +12,6 @@ import AppKit
 struct StatusIndicator: View {
 	@Environment(ModelManager.self) private var manager
 	@State private var showInfo = false
-	@State private var dismissTask: Task<Void, Never>?
 
 	let model: GenerativeChatModel
 
@@ -39,9 +38,12 @@ struct StatusIndicator: View {
 			case .unverified, .checking:
 				return capabilities.dataResidency == .onDevice
 					? "Warming up the model…"
-					: "Checking the connection…"
+					: "Verifying access…"
 			case .verified:
-				return status == .cloud ? "Connected (public cloud)" : "Model ready (secure)"
+				// A vendor light can't claim a live connection — the API is
+				// stateless HTTPS and connects per send. Green means the key
+				// and route checked out recently.
+				return status == .cloud ? "Ready (access verified)" : "Model ready (secure)"
 			case .offline:
 				return "No internet connection"
 			case .unauthorized:
@@ -71,24 +73,24 @@ struct StatusIndicator: View {
 		GlowDot(color: status.color, alive: status.isLive)
 			.frame(width: 24, height: 24)
 			.padding(6)
+			// The dot is 4pt of opaque pixels; without an explicit content
+			// shape, that's the entire hit target. This makes the whole
+			// padded bubble clickable, not just the dot.
+			.contentShape(Circle())
+			// Hover gets the tooltip, click gets the popover. `onHover` is
+			// delivered from AppKit's tracking-area update, which runs inside the
+			// layout pass — flipping presentation state there made SwiftUI open
+			// the popover from within `NSHostingView.layout()`, and the
+			// `addChildWindow:` behind `NSPopover` rebuilds the window's whole
+			// ordering group. Re-ordering a sheet mid-layout is what crashed us.
+			// A tap arrives from an event, so the popover opens a turn later.
 			.help(label)
-			.onHover { hovering in
-				dismissTask?.cancel()
-				if hovering {
-					showInfo = true
-				} else {
-					dismissTask = Task {
-						try? await Task.sleep(for: .milliseconds(150))
-						if !Task.isCancelled { showInfo = false }
-					}
-				}
-			}
+			.onTapGesture { showInfo.toggle() }
 			.popover(isPresented: $showInfo, arrowEdge: .bottom) {
 				ModelInfoView(model: model, capabilities: capabilities)
 					.padding(14)
 					.frame(width: 230)
 			}
-			.onTapGesture {}
 			.task(id: RefreshKey(modelID: model.id, generation: manager.probeGeneration),
 				  priority: .background) {
 				await manager.refreshCapabilities(for: model)
@@ -110,6 +112,7 @@ struct MissingModelIndicator: View {
 		GlowDot(color: StatusLevel.failed.color, alive: false)
 			.frame(width: 24, height: 24)
 			.padding(6)
+			.contentShape(Circle())
 			.help("\(ModelManagerError.readable(modelID)) isn't available right now.")
 	}
 }

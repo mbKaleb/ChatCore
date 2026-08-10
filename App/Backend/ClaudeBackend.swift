@@ -71,22 +71,25 @@ struct ClaudeBackend: ChatBackend {
 		)
 	}
 
+	/// Anthropic's API is stateless HTTPS — there is no connection to hold open
+	/// ahead of a send, and nothing server-side a speculative inference would
+	/// warm: the prompt cache is keyed to a conversation's exact prefix, which
+	/// no probe can share. So verification asks the cheapest authenticated
+	/// question the vendor serves — the free models list. That proves the key
+	/// and the route, leaves URLSession's TLS connection warm for the send
+	/// that actually needs one, and costs no tokens.
 	func verifyConnection(to model: GenerativeChatModel) async -> ConnectionState {
-		guard #available(macOS 27.0, *) else { return .failed }
-		guard apiKey != nil else { return .unauthorized }
+		guard let apiKey else { return .unauthorized }
 		guard NetworkMonitor.shared.isOnline else { return .offline }
 
-		do {
-			let session = try await makeSession(for: model, instructions: nil)
-			_ = try await session.respond(
-				to: ConnectionProbe.prompt,
-				options: GenerationOptions(maximumResponseTokens: ConnectionProbe.maximumResponseTokens)
-			)
-			return .verified
-		} catch ClaudeError.missingCredential {
-			return .unauthorized
-		} catch {
-			return .diagnosing(error)
+		switch await APIKeyValidator.verify(apiKey, for: .anthropic) {
+		case .valid:       return .verified
+		case .rejected:    return .unauthorized
+		// A key the account isn't entitled to spend is still a key that won't
+		// send: same dead end for the composer as a rejected one.
+		case .forbidden:   return .unauthorized
+		case .unreachable: return NetworkMonitor.shared.isOnline ? .failed : .offline
+		case .unchecked:   return .unverified
 		}
 	}
 
@@ -94,7 +97,7 @@ struct ClaudeBackend: ChatBackend {
 		to turns: [ChatTurn],
 		model: GenerativeChatModel,
 		options: ChatOptions
-	) -> AsyncThrowingStream<String, Error> {
+	) -> AsyncThrowingStream<ReplyEvent, Error> {
 		AsyncThrowingStream { continuation in
 			let task = Task {
 				do {
@@ -102,13 +105,18 @@ struct ClaudeBackend: ChatBackend {
 						for: model,
 						instructions: Array(turns.dropLast()).historyInstructions
 					)
+					// The session is fresh each turn — history rides in the
+					// instructions — so every reasoning entry the transcript
+					// grows belongs to this turn and no baseline is skipped.
+					let watcher = ThinkingWatcher.watch(session, into: continuation)
+					defer { watcher.cancel() }
 					let stream = session.streamResponse(
 						to: turns.foundationModelsPrompt,
 						options: options.generationOptions
 					)
 					for try await partial in stream {
 						try Task.checkCancellation()
-						continuation.yield(partial.content)
+						continuation.yield(.content(partial.content))
 					}
 					continuation.finish()
 				} catch {

@@ -149,6 +149,10 @@ final class CompiledListViewController: NSViewController {
 
 	nonisolated(unsafe) private var boundsObserver: NSObjectProtocol?
 
+	/// Which era of the cache this controller belongs to — see
+	/// `CompiledDocumentCache.generation`.
+	private let cacheGeneration = CompiledDocumentCache.generation
+
 	init(
 		conversationID: UUID,
 		style: CompileStyle,
@@ -176,9 +180,12 @@ final class CompiledListViewController: NSViewController {
 		document.style = style
 		documentView = document
 
-		let scroll = OverlayScrollView()
+		let scroll = NSScrollView()
+		scroll.hasVerticalScroller = true
 		scroll.hasHorizontalScroller = false
-		LazyScroller.install(on: scroll)
+		scroll.autohidesScrollers = true
+		scroll.scrollerStyle = .overlay
+		scroll.verticalScroller?.controlSize = .small
 		scroll.drawsBackground = false
 		scroll.backgroundColor = .clear
 		scroll.automaticallyAdjustsContentInsets = false
@@ -429,7 +436,8 @@ final class CompiledListViewController: NSViewController {
 				layoutKey: style.layoutKey,
 				width: document.width
 			),
-			for: conversationID
+			for: conversationID,
+			generation: cacheGeneration
 		)
 	}
 

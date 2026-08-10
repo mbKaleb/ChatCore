@@ -1062,9 +1062,15 @@ enum LatexCompat {
 				continue
 			}
 
+			// An empty name is a backslash ending the source mid-stream.
+			guard !name.isEmpty else {
+				stripped += "\\"
+				i = source.index(after: i)
+				continue
+			}
 			guard definers.contains(name) else {
-				stripped += "\\" + (name.isEmpty ? String(source[source.index(after: i)]) : name)
-				i = name.isEmpty ? source.index(i, offsetBy: 2) : afterName
+				stripped += "\\" + name
+				i = afterName
 				continue
 			}
 

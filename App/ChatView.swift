@@ -16,23 +16,45 @@ struct ChatView: View {
 	/// How the transcript is drawn. Passed in rather than read from settings
 	/// here, so this view has no opinion about which renderers exist.
 	var renderer: TranscriptRenderer
-	@State private var input: String = ""
-	@State private var pastedAttachments: [MessageAttachment] = []
+	@State private var composer = ComposerState()
 	@State private var showFileImporter = false
 	@State private var isDropTargeted = false
 	@State private var scrollToBottomToken = 0
 	@State private var composeHeight: CGFloat = 0
-	@State private var errorMessage: String?
-	@State private var errorSuggestsSettings = false
 	@FocusState private var inputFocused: Bool
 
 	@State private var sortedMessagesCache: [Message] = []
 
-	private var sortedMessages: [Message] { sortedMessagesCache }
+	/// Which conversation `sortedMessagesCache` was built from.
+	@State private var cachedConversationID: UUID?
+
+	/// The transcript, oldest first. Served from the cache except on the one
+	/// frame where the conversation has changed under the view but `onChange`
+	/// hasn't caught the cache up yet — sorting fresh there keeps that frame
+	/// from handing the new renderer the *previous* chat's messages to build,
+	/// measure, and throw away.
+	private var sortedMessages: [Message] {
+		cachedConversationID == conversation.id
+			? sortedMessagesCache
+			: Self.sortedByTimestamp(conversation.messages)
+	}
+
+	/// Ties broken by id: `sorted` isn't stable, so two messages minted in the
+	/// same instant could swap order between rebuilds.
+	private static func sortedByTimestamp(_ messages: [Message]) -> [Message] {
+		messages.sorted {
+			$0.timestamp != $1.timestamp ? $0.timestamp < $1.timestamp : $0.id < $1.id
+		}
+	}
+
+	private func rebuildCache() {
+		sortedMessagesCache = Self.sortedByTimestamp(conversation.messages)
+		cachedConversationID = conversation.id
+	}
 
 	private var isResponding: Bool {
 		guard let last = sortedMessages.last else { return false }
-		return manager.generatingMessageID == last.id
+		return manager.generatingMessageIDs.contains(last.id)
 	}
 
 	private var isSelectingText: Bool {
@@ -62,76 +84,21 @@ struct ChatView: View {
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 				.id(conversation.id)
 
-			GlassEffectContainer(spacing: 8) {
-				VStack(alignment: .leading, spacing: 8) {
-					if !pastedAttachments.isEmpty || isDropTargeted {
-						attachmentsTray
-					}
-
-					HStack(spacing: 8) {
-						Button { showFileImporter = true } label: {
-							Image(systemName: "plus")
-								.font(.title3)
-								.frame(width: 34, height: 34)
-								.contentShape(Circle())
-						}
-						.buttonStyle(.plain)
-						.glassEffect(.clear, in: .rect(cornerRadius: 20))
-						.help("Attach a file")
-
-						HStack(alignment: .center, spacing: 8) {
-							TextField("Message", text: $input, axis: .vertical)
-								.textFieldStyle(.plain)
-								.scrollContentBackground(.hidden)
-								.focused($inputFocused)
-								.onSubmit {
-									guard !isResponding else { return }
-									Task { await send() }
-								}
-								.onKeyPress(.return, phases: .down) { press in
-									guard press.modifiers.contains(.shift) else { return .ignored }
-									input.insert(contentsOf: "\n", at: input.endIndex)
-									return .handled
-								}
-								.onKeyPress(.escape) {
-									guard isResponding else { return .ignored }
-									stopResponding()
-									return .handled
-								}
-								.onChange(of: input) { oldValue, newValue in
-									guard let pasted = pastedChunk(from: oldValue, to: newValue) else { return }
-									input = oldValue
-									addAttachment(MessageAttachment(text: pasted))
-								}
-
-							Button {
-								if isResponding { stopResponding() } else { Task { await send() } }
-							} label: {
-								Image(systemName: isResponding ? "stop.circle.fill" : "arrow.up.circle.fill")
-									.font(.system(size: 25))
-									.contentTransition(.symbolEffect(.replace))
-									.frame(width: 30, height: 30)
-									.contentShape(Circle())
-							}
-							.buttonStyle(.plain)
-							.disabled(!isResponding && input.isEmpty && pastedAttachments.isEmpty)
-							.help(isResponding ? "Stop generating (Esc)" : "Send")
-						}
-						.padding(.leading, 13)
-						.padding(.trailing, 4)
-						.padding(.vertical, 4)
-						.frame(maxWidth: .infinity)
-						.glassEffect(.clear, in: .rect(cornerRadius: 19))
-					}
-				}
-			}
-			.padding()
-			.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composeHeight = $0 }
+			Composer(
+				state: composer,
+				isResponding: isResponding,
+				isDropTargeted: isDropTargeted,
+				focus: $inputFocused,
+				height: $composeHeight,
+				onSend: { Task { await send() } },
+				onStop: stopResponding,
+				onAttach: { showFileImporter = true }
+			)
 		}
 		.background {
 			BackendWatermark(
 				logoName: manager.logoName(for: conversation.modelID),
-				isEmpty: sortedMessagesCache.isEmpty
+				isEmpty: sortedMessages.isEmpty
 			)
 		}
 		.background { PasteImageCatcher(onPaste: acceptImages(from:)) }
@@ -159,38 +126,62 @@ struct ChatView: View {
 			importFile(result)
 		}
 		.onAppear {
-			if sortedMessagesCache.isEmpty {
-				sortedMessagesCache = conversation.messages.sorted { $0.timestamp < $1.timestamp }
-			}
+			if cachedConversationID != conversation.id { rebuildCache() }
+			app.registerComposer(composer, for: conversation.id)
+			loadDraft()
 			claimPendingFocus()
 		}
-		.onChange(of: conversation.id) {
-			input = ""
-			errorMessage = nil
-			errorSuggestsSettings = false
-			sortedMessagesCache = conversation.messages.sorted { $0.timestamp < $1.timestamp }
+		// Multi-select or an emptied selection replaces this view with a
+		// placeholder; whatever was mid-composition waits in the store.
+		.onDisappear {
+			stashDraft(for: conversation.id)
+			app.unregisterComposer(composer)
+		}
+		.onChange(of: conversation.id) { oldID, newID in
+			stashDraft(for: oldID)
+			app.registerComposer(composer, for: newID)
+			loadDraft()
+			rebuildCache()
 			claimPendingFocus()
+		}
+		// The cache mirrors the store, and the store has writers this view
+		// never sees run: a `send` captured by an instance that has since been
+		// torn down and rebuilt still removes its failed exchange from
+		// `conversation.messages`. Membership is all they change from outside,
+		// so the count is the resync signal.
+		.onChange(of: conversation.messages.count) {
+			guard cachedConversationID == conversation.id,
+			      sortedMessagesCache.count != conversation.messages.count else { return }
+			rebuildCache()
 		}
 		.onChange(of: app.sidebarOpen) {
 			if !app.sidebarOpen { inputFocused = true }
 		}
+		// Presented from the model's per-chat store rather than local state:
+		// the reporter may be a task whose view is long gone, and an error
+		// for another chat should wait for that chat, not pop over this one.
+		// Clearing on dismissal drops the whole entry — including the
+		// suggests-settings flag that used to survive into the next,
+		// unrelated error's alert.
 		.alert(
 			"Oops!",
 			isPresented: Binding(
-				get: { errorMessage != nil },
-				set: { if !$0 { errorMessage = nil } }
+				get: { app.chatErrors[conversation.id] != nil },
+				set: { presented in
+					if !presented { app.clearChatError(for: conversation.id) }
+				}
 			)
 		) {
-			if errorSuggestsSettings {
+			if app.chatErrors[conversation.id]?.suggestsSettings == true {
 				Button("Open System Settings") {
 					if let url = URL(string: "x-apple.systempreferences:com.apple.systempreferences.AppleIDSettings") {
 						NSWorkspace.shared.open(url)
 					}
 				}
 			}
-			Button("OK", role: .cancel) { errorSuggestsSettings = false }
+			Button("OK", role: .cancel) { }
 		} message: {
-			Text(errorMessage ?? "Something went wrong.")
+			Text(app.chatErrors[conversation.id]?.message ?? "Something went wrong.")
 		}
 	}
 
@@ -202,6 +193,22 @@ struct ChatView: View {
 		guard app.focusInputOnNextChat else { return }
 		app.focusInputOnNextChat = false
 		inputFocused = true
+	}
+
+	// MARK: - Drafts
+
+	/// Swap this chat's stashed draft into the compose bar.
+	private func loadDraft() {
+		let draft = app.takeDraft(for: conversation.id)
+		composer.setText(draft.text)
+		composer.attachments = draft.attachments
+	}
+
+	private func stashDraft(for id: UUID) {
+		app.stashDraft(
+			ChatDraft(text: composer.text, attachments: composer.attachments),
+			for: id
+		)
 	}
 
 	/// The conversation's own model, or nothing.
@@ -242,45 +249,29 @@ struct ChatView: View {
 		}
 	}
 
-	private func pastedChunk(from oldValue: String, to newValue: String) -> String? {
-		guard newValue.count > oldValue.count else { return nil }
-
-		let old = Array(oldValue)
-		let new = Array(newValue)
-
-		var prefix = 0
-		while prefix < old.count, prefix < new.count, old[prefix] == new[prefix] {
-			prefix += 1
-		}
-
-		var suffix = 0
-		let maxSuffix = min(old.count - prefix, new.count - prefix)
-		while suffix < maxSuffix, old[old.count - 1 - suffix] == new[new.count - 1 - suffix] {
-			suffix += 1
-		}
-
-		let insertedRange = prefix..<(new.count - suffix)
-		guard insertedRange.count > 32 else { return nil }
-		return String(new[insertedRange])
-	}
-
 	private func importFile(_ result: Result<[URL], Error>) {
 		guard case .success(let urls) = result else { return }
-		importFiles(urls)
+		importFiles(urls, for: conversation.id)
 	}
 
 	private static let dropTypes: [UTType] =
-		[.fileURL] + AttachmentImage.readableTypes + [.image]
+		[.fileURL] + AttachmentImage.readableTypes + [.image, .plainText]
 
 	private func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
 		var handled = false
+
+		// Stamped now, delivered later: providers complete whenever their app
+		// materializes the data — seconds, for a file promise — and by then
+		// the user may be composing in a different chat. Everything below
+		// stages for the chat the drop landed on, wherever its draft is then.
+		let targetID = conversation.id
 
 		for provider in providers {
 			if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
 				handled = true
 				_ = provider.loadObject(ofClass: URL.self) { url, _ in
 					guard let url else { return }
-					Task { @MainActor in importFiles([url]) }
+					Task { @MainActor in importFiles([url], for: targetID) }
 				}
 				continue
 			}
@@ -290,16 +281,31 @@ struct ChatView: View {
 			if let identifier = imageTypeIdentifier(for: provider) {
 				handled = true
 				provider.loadDataRepresentation(forTypeIdentifier: identifier) { data, _ in
-					Task { @MainActor in stageDroppedImage(data, name: name) }
+					Task { @MainActor in stageDroppedImage(data, name: name, for: targetID) }
 				}
 				continue
 			}
 
-			guard provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) else { continue }
+			if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+				handled = true
+				provider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { url, _ in
+					let data = url.flatMap { try? Data(contentsOf: $0) }
+					Task { @MainActor in
+						stageDroppedImage(data, name: name ?? url?.lastPathComponent, for: targetID)
+					}
+				}
+				continue
+			}
+
+			// A run of selected text dragged straight from another app — no
+			// file behind it, so none of the branches above claim it.
+			guard provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) else { continue }
 			handled = true
-			provider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { url, _ in
-				let data = url.flatMap { try? Data(contentsOf: $0) }
-				Task { @MainActor in stageDroppedImage(data, name: name ?? url?.lastPathComponent) }
+			_ = provider.loadObject(ofClass: String.self) { text, _ in
+				guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+				Task { @MainActor in
+					app.stageAttachment(MessageAttachment(title: "Dropped Text", text: text), for: targetID)
+				}
 			}
 		}
 
@@ -313,56 +319,42 @@ struct ChatView: View {
 	}
 
 	@MainActor
-	private func stageDroppedImage(_ data: Data?, name: String?) {
+	private func stageDroppedImage(_ data: Data?, name: String?, for targetID: UUID) {
 		guard
 			let data,
 			let attachment = MessageAttachment(imageData: data, title: name ?? "Dropped Image")
 		else {
-			errorMessage = "Couldn't read that image."
+			app.reportChatError(ChatError(message: "Couldn't read that image."), for: targetID)
 			return
 		}
-		addAttachment(attachment)
+		app.stageAttachment(attachment, for: targetID)
 	}
 
-	@discardableResult
-	private func importFiles(_ urls: [URL]) -> Bool {
+	/// Reads and image decodes happen off the main thread — done inline, a
+	/// dropped gigabyte of log beachballed the app for the whole read.
+	private func importFiles(_ urls: [URL], for targetID: UUID) {
+		Task {
+			let outcomes = await Task.detached(priority: .userInitiated) {
+				urls.map(AttachmentImport.load)
+			}.value
+			stageImports(outcomes, for: targetID)
+		}
+	}
+
+	@MainActor
+	private func stageImports(_ outcomes: [AttachmentImport.Outcome], for targetID: UUID) {
 		var unreadable: [String] = []
-
-		for url in urls {
-			guard url.isFileURL else {
-				unreadable.append(url.lastPathComponent)
-				continue
+		var tooLarge: [String] = []
+		for outcome in outcomes {
+			switch outcome {
+			case .attachment(let attachment): app.stageAttachment(attachment, for: targetID)
+			case .unreadable(let name): unreadable.append(name)
+			case .tooLarge(let name): tooLarge.append(name)
 			}
-
-			let didAccess = url.startAccessingSecurityScopedResource()
-			defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
-
-			if AttachmentImage.isReadable(AttachmentImage.type(of: url)) {
-				guard
-					let data = try? Data(contentsOf: url),
-					let attachment = MessageAttachment(imageData: data, title: url.lastPathComponent)
-				else {
-					unreadable.append(url.lastPathComponent)
-					continue
-				}
-				addAttachment(attachment)
-				continue
-			}
-
-			guard let text = try? String(contentsOf: url, encoding: .utf8) else {
-				unreadable.append(url.lastPathComponent)
-				continue
-			}
-			addAttachment(MessageAttachment(title: url.lastPathComponent, text: text))
 		}
-
-		switch unreadable.count {
-		case 0: break
-		case 1: errorMessage = "Couldn't read \u{201C}\(unreadable[0])\u{201D}."
-		default: errorMessage = "Couldn't read \(unreadable.count) of those files."
+		if let failure = AttachmentImport.failureMessage(unreadable: unreadable, tooLarge: tooLarge) {
+			app.reportChatError(ChatError(message: failure), for: targetID)
 		}
-
-		return unreadable.count < urls.count
 	}
 
 	@MainActor
@@ -371,78 +363,14 @@ struct ChatView: View {
 
 		let attachments = pasteboard.imageAttachments()
 		guard !attachments.isEmpty else {
-			errorMessage = "Couldn't read that image."
+			app.reportChatError(ChatError(message: "Couldn't read that image."), for: conversation.id)
 			return true
 		}
 		for attachment in attachments {
-			addAttachment(attachment)
+			composer.add(attachment)
 		}
 		return true
 	}
-
-	@MainActor
-	private func addAttachment(_ attachment: MessageAttachment) {
-		withAnimation(.smooth(duration: 0.34)) {
-			pastedAttachments.append(attachment)
-		}
-	}
-
-	@MainActor
-	private func removeAttachment(_ attachment: MessageAttachment) {
-		withAnimation(.smooth(duration: 0.28)) {
-			pastedAttachments.removeAll { $0.id == attachment.id }
-		}
-	}
-
-	// MARK: - Attachments tray
-
-	private var attachmentsTray: some View {
-		Group {
-			if isDropTargeted {
-				HStack(spacing: 8) {
-					Image(systemName: "arrow.down.doc")
-					Text("Drop here")
-				}
-				.font(.callout)
-				.foregroundStyle(.secondary)
-				.frame(maxWidth: .infinity)
-				.frame(height: 48)
-			} else {
-				ScrollView(.horizontal, showsIndicators: false) {
-					HStack(spacing: 8) {
-						ForEach(pastedAttachments) { attachment in
-							AttachmentChip(attachment: attachment) {
-								removeAttachment(attachment)
-							}
-							.transition(Self.chipTransition)
-						}
-					}
-					.padding(6)
-				}
-				.fixedSize(horizontal: false, vertical: true)
-			}
-		}
-		.glassEffect(.clear, in: RoundedRectangle(cornerRadius: 18))
-		.overlay {
-			if isDropTargeted {
-				RoundedRectangle(cornerRadius: 18)
-					.strokeBorder(.secondary, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
-			}
-		}
-		.transition(Self.trayTransition)
-	}
-
-	private static let chipTransition: AnyTransition = .asymmetric(
-		insertion: .scale(scale: 0.72)
-			.combined(with: .opacity)
-			.animation(.bouncy(duration: 0.38, extraBounce: 0.22)),
-		removal: .opacity.animation(.easeOut(duration: 0.22))
-	)
-
-	private static let trayTransition: AnyTransition = .asymmetric(
-		insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)),
-		removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .top))
-	)
 
 	@MainActor
 	private func stopResponding() {
@@ -452,12 +380,12 @@ struct ChatView: View {
 
 	@MainActor
 	func send() async {
-		let typed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-		let attachments = pastedAttachments
+		let typed = composer.text.trimmingCharacters(in: .whitespacesAndNewlines)
+		let attachments = composer.attachments
 		let prompt = attachments.composedPrompt(with: typed)
 		guard !prompt.isEmpty || !attachments.images.isEmpty else { return }
-		input = ""
-		pastedAttachments = []
+		composer.setText("")
+		composer.attachments = []
 
 		let sentConversationID = conversation.id
 
@@ -473,7 +401,7 @@ struct ChatView: View {
 
 		let history = turns(upTo: sortedMessages.count - 1)
 
-		manager.beginGeneration(for: assistantMsg.id)
+		manager.beginGeneration(for: assistantMsg.id, in: sentConversationID)
 
 		do {
 			guard let model = resolvedModel else {
@@ -498,17 +426,24 @@ struct ChatView: View {
 					assistantMsg.text = latest
 				}
 
-				for try await snapshot in stream {
-					latest = snapshot
-					let now = Date()
-					if now.timeIntervalSince(lastVisualFlush) >= minVisualFlushInterval {
-						manager.updateGeneration(assistantMsg.id, text: latest)
-						manager.recordChunk(latest, for: assistantMsg.id)
-						lastVisualFlush = now
-					}
-					if now.timeIntervalSince(lastPersistFlush) >= minPersistFlushInterval {
-						assistantMsg.text = latest
-						lastPersistFlush = now
+				for try await event in stream {
+					switch event {
+					case .thinking(let thinking):
+						// Already paced by the backend's transcript poll, so no
+						// throttle of its own.
+						manager.updateThinking(assistantMsg.id, text: thinking)
+					case .content(let snapshot):
+						latest = snapshot
+						let now = Date()
+						if now.timeIntervalSince(lastVisualFlush) >= minVisualFlushInterval {
+							manager.updateGeneration(assistantMsg.id, text: latest)
+							manager.recordChunk(latest, for: assistantMsg.id)
+							lastVisualFlush = now
+						}
+						if now.timeIntervalSince(lastPersistFlush) >= minPersistFlushInterval {
+							assistantMsg.text = latest
+							lastPersistFlush = now
+						}
 					}
 				}
 				return latest
@@ -519,21 +454,34 @@ struct ChatView: View {
 		} catch {
 			let latest = manager.liveText[assistantMsg.id] ?? assistantMsg.text
 			assistantMsg.text = latest
-			if assistantMsg.text.isEmpty {
+
+			// A deliberate stop isn't a failure: the prompt was answered as far
+			// as the user wanted. Backends that end the stream quietly on cancel
+			// never reach this catch; this evens out the ones that throw.
+			let cancelled = error is CancellationError
+
+			// Everything user-facing below goes through the model, keyed by the
+			// sent chat, never through this view's own state: this method runs
+			// on a copy captured at send time, and by now the sent chat may be
+			// showing through a rebuilt view — or not at all. The model knows
+			// where that chat's draft lives and holds its error until it's on
+			// screen; a copy of dead `@State` can't reach either. The cache
+			// writes are safe on any copy — removing ids that aren't there is a
+			// no-op, and a live view that missed them resyncs off the store's
+			// message count.
+			if assistantMsg.text.isEmpty, !cancelled {
 				conversation.messages.removeAll { $0.id == assistantMsg.id || $0.id == userMsg.id }
 				sortedMessagesCache.removeAll { $0.id == assistantMsg.id || $0.id == userMsg.id }
-				if conversation.id == sentConversationID {
-					input = typed
-					pastedAttachments = attachments
-				}
+				app.restoreDraft(text: typed, attachments: attachments, for: sentConversationID)
 			}
-			if conversation.id == sentConversationID {
-				if isCloudUnavailable(error) {
-					errorSuggestsSettings = true
-					errorMessage = "Private Cloud isn't available right now. Make sure you're signed in to your Apple Account and Apple Intelligence is enabled."
-				} else {
-					errorMessage = error.localizedDescription
-				}
+			if !cancelled {
+				let failure = isCloudUnavailable(error)
+					? ChatError(
+						message: "Private Cloud isn't available right now. Make sure you're signed in to your Apple Account and Apple Intelligence is enabled.",
+						suggestsSettings: true
+					)
+					: ChatError(message: error.localizedDescription)
+				app.reportChatError(failure, for: sentConversationID)
 			}
 		}
 
@@ -544,7 +492,11 @@ struct ChatView: View {
 
 		manager.endGeneration(for: assistantMsg.id)
 
-		if conversation.title == "New Chat" && conversation.messages.count == 2 {
+		// "First completed exchange", not "exactly two messages": a stop
+		// before the first token leaves an odd count behind, and an exact
+		// count would then never title the chat at all.
+		if conversation.title == Conversation.untitledTitle,
+		   conversation.messages.contains(where: { $0.role == "assistant" }) {
 			await generateTitle(from: prompt, images: history.last?.images ?? [])
 		}
 	}
@@ -562,12 +514,78 @@ struct ChatView: View {
 				to: [ChatTurn(role: .user, content: titlePrompt, images: images)],
 				using: model
 			)
-			for try await snapshot in stream { title = snapshot }
+			for try await event in stream {
+				if case .content(let snapshot) = event { title = snapshot }
+			}
 		} catch {
 			return
 		}
 		let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
 		if !trimmed.isEmpty { conversation.title = trimmed }
+	}
+}
+
+// MARK: - File import
+
+/// The file-to-attachment pipeline, deliberately off the main actor: reads,
+/// text decoding, and image normalization all run wherever the caller puts
+/// them — `importFiles` puts them on a detached task.
+private nonisolated enum AttachmentImport {
+
+	/// Past this, a file isn't a chat attachment — it's a context window all
+	/// by itself — and reading it in would stall even the background hop.
+	static let maxFileBytes = 20 << 20
+
+	enum Outcome {
+		case attachment(MessageAttachment)
+		case unreadable(String)
+		case tooLarge(String)
+	}
+
+	static func load(_ url: URL) -> Outcome {
+		let name = url.lastPathComponent
+		guard url.isFileURL else { return .unreadable(name) }
+
+		let didAccess = url.startAccessingSecurityScopedResource()
+		defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+
+		if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+		   size > maxFileBytes {
+			return .tooLarge(name)
+		}
+
+		if AttachmentImage.isReadable(AttachmentImage.type(of: url)) {
+			guard
+				let data = try? Data(contentsOf: url),
+				let attachment = MessageAttachment(imageData: data, title: name)
+			else { return .unreadable(name) }
+			return .attachment(attachment)
+		}
+
+		guard let text = decodeText(url) else { return .unreadable(name) }
+		return .attachment(MessageAttachment(title: name, text: text))
+	}
+
+	/// UTF-8 first, since that's what nearly everything is; then whatever the
+	/// file declares for itself; then Latin-1, which maps every byte rather
+	/// than rejecting a readable file outright.
+	private static func decodeText(_ url: URL) -> String? {
+		if let text = try? String(contentsOf: url, encoding: .utf8) { return text }
+		var detected = String.Encoding.utf8
+		if let text = try? String(contentsOf: url, usedEncoding: &detected) { return text }
+		guard let data = try? Data(contentsOf: url) else { return nil }
+		return String(data: data, encoding: .isoLatin1)
+	}
+
+	static func failureMessage(unreadable: [String], tooLarge: [String]) -> String? {
+		switch (unreadable.count, tooLarge.count) {
+		case (0, 0): return nil
+		case (1, 0): return "Couldn't read \u{201C}\(unreadable[0])\u{201D}."
+		case (0, 1): return "\u{201C}\(tooLarge[0])\u{201D} is too large to attach."
+		case (_, 0): return "Couldn't read \(unreadable.count) of those files."
+		case (0, _): return "Those files are too large to attach."
+		default: return "Couldn't attach \(unreadable.count + tooLarge.count) of those files."
+		}
 	}
 }
 

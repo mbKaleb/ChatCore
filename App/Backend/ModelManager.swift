@@ -58,25 +58,62 @@ final class ModelManager {
 
 	private(set) var liveText: [Message.ID: String] = [:]
 
-	/// Scalar mirror of "is a turn in flight", published separately from
-	/// `liveText` so chrome that only needs the on/off state doesn't get
-	/// invalidated by every token flush.
-	private(set) var generatingMessageID: Message.ID?
+	/// The reasoning streamed for a turn in flight, when the model reasons out
+	/// loud. Display-only: nothing persists it, and `endGeneration` drops it
+	/// with the rest of the live state.
+	private(set) var liveThinking: [Message.ID: String] = [:]
+
+	/// The turns in flight, published separately from `liveText` so chrome that
+	/// only needs on/off — the send button flipping to a stop square — isn't
+	/// invalidated by every token flush. A set rather than a scalar: two
+	/// conversations can stream at once, and a scalar let the second send
+	/// overwrite the first, turning the older chat's stop button back into a
+	/// send arrow while its stream was still running.
+	private(set) var generatingMessageIDs: Set<Message.ID> = []
+
+	/// The conversations those turns belong to, for chrome that stands outside
+	/// any one chat view — the window tab's spinner needs "is *this window's*
+	/// chat busy" without holding the messages themselves.
+	private(set) var generatingConversationIDs: Set<UUID> = []
+
+	@ObservationIgnored
+	private var conversationForMessage: [Message.ID: UUID] = [:]
 
 	@ObservationIgnored
 	private var cancelHandlers: [Message.ID: @MainActor () -> Void] = [:]
 
 	private(set) var liveChunks: [Message.ID: [StreamChunk]] = [:]
 
-	private struct ChunkCursor { var text: String; var byteCount: Int }
+	private struct ChunkCursor {
+		var text: String
+		var byteCount: Int
+		/// When the next recorded piece may become visible. The model streams
+		/// per token but delivers in decode batches ~300ms apart, so arrivals
+		/// are re-spread at a steady pace to read as tokens, not blocks.
+		///
+		/// Optional rather than a sentinel: a monotonic instant has no
+		/// `.distantPast` to reach for, and "nothing scheduled yet" is what nil
+		/// already says.
+		var nextArrival: ContinuousClock.Instant?
+	}
+
+	/// Target delay between two pieces of one delta becoming visible.
+	private static let paceSpacing: Duration = .milliseconds(25)
+
+	/// How far past "now" a piece may be scheduled. Deltas that would push
+	/// beyond this get compressed instead — the reveal stays a beat behind the
+	/// stream at most, rather than drifting into a minutes-long typewriter.
+	private static let paceWindow: Duration = .milliseconds(350)
 	@ObservationIgnored
 	private var chunkCursor: [Message.ID: ChunkCursor] = [:]
 
-	func beginGeneration(for messageID: Message.ID) {
+	func beginGeneration(for messageID: Message.ID, in conversationID: UUID) {
 		liveText[messageID] = ""
 		liveChunks[messageID] = []
 		chunkCursor[messageID] = ChunkCursor(text: "", byteCount: 0)
-		generatingMessageID = messageID
+		generatingMessageIDs.insert(messageID)
+		conversationForMessage[messageID] = conversationID
+		generatingConversationIDs.insert(conversationID)
 	}
 
 	func registerCancellation(for messageID: Message.ID, _ cancel: @escaping @MainActor () -> Void) {
@@ -87,23 +124,63 @@ final class ModelManager {
 		liveText[messageID] = text
 	}
 
+	func updateThinking(_ messageID: Message.ID, text: String) {
+		liveThinking[messageID] = text
+	}
+
 	func recordChunk(_ full: String, for messageID: Message.ID) {
 		let cursor = chunkCursor[messageID] ?? ChunkCursor(text: "", byteCount: 0)
 		guard full != cursor.text else { return }
 
 		guard full.utf8.starts(with: cursor.text.utf8) else {
 			chunkCursor[messageID] = ChunkCursor(text: full, byteCount: full.utf8.count)
-			liveChunks[messageID] = [StreamChunk(id: 0, text: full, arrival: Date())]
+			liveChunks[messageID] = [StreamChunk(id: 0, text: full, arrival: ContinuousClock.now)]
 			return
 		}
 
 		let delta = String(decoding: full.utf8.dropFirst(cursor.byteCount), as: UTF8.self)
 		guard !delta.isEmpty else { return }
-		chunkCursor[messageID] = ChunkCursor(text: full, byteCount: full.utf8.count)
 
 		var chunks = liveChunks[messageID] ?? []
-		chunks.append(StreamChunk(id: chunks.count, text: delta, arrival: Date()))
+		let pieces = Self.pieces(of: delta)
+		let now = ContinuousClock.now
+		var arrival = max(now, cursor.nextArrival ?? now)
+		let deadline = now + Self.paceWindow
+		// Negative once the cursor is already past the window; the clamp below
+		// is what absorbs that, as the interval arithmetic here used to.
+		let headroom = deadline - arrival
+		// `pieces.count` is non-zero — the empty delta is turned away above —
+		// and that guard is load-bearing now in a way it was not: dividing a
+		// `Duration` by zero traps where dividing a `Double` did not.
+		let spacing = min(Self.paceSpacing, max(.zero, headroom) / pieces.count)
+		for piece in pieces {
+			chunks.append(StreamChunk(id: chunks.count, text: piece, arrival: arrival))
+			arrival += spacing
+		}
+
+		chunkCursor[messageID] = ChunkCursor(
+			text: full, byteCount: full.utf8.count, nextArrival: arrival
+		)
 		liveChunks[messageID] = chunks
+	}
+
+	/// Word-sized pieces of a delta, each keeping the whitespace that precedes
+	/// it, so scattering their arrivals reads as one word landing at a time.
+	private static func pieces(of delta: String) -> [String] {
+		var pieces: [String] = []
+		var current = ""
+		var sawWord = false
+		for character in delta {
+			if character.isWhitespace, sawWord {
+				pieces.append(current)
+				current = ""
+				sawWord = false
+			}
+			current.append(character)
+			if !character.isWhitespace { sawWord = true }
+		}
+		if !current.isEmpty { pieces.append(current) }
+		return pieces
 	}
 
 	func cancelGeneration(for messageID: Message.ID) {
@@ -116,10 +193,17 @@ final class ModelManager {
 
 	func endGeneration(for messageID: Message.ID) {
 		liveText.removeValue(forKey: messageID)
+		liveThinking.removeValue(forKey: messageID)
 		liveChunks.removeValue(forKey: messageID)
 		chunkCursor.removeValue(forKey: messageID)
 		cancelHandlers.removeValue(forKey: messageID)
-		if generatingMessageID == messageID { generatingMessageID = nil }
+		generatingMessageIDs.remove(messageID)
+		// Only clear the conversation once its *last* turn ends — the set is
+		// per-conversation, the mapping per-message, and they can disagree.
+		if let conversationID = conversationForMessage.removeValue(forKey: messageID),
+		   !conversationForMessage.values.contains(conversationID) {
+			generatingConversationIDs.remove(conversationID)
+		}
 	}
 
 	// MARK: - Backends (private — nothing above this layer sees them)
@@ -537,6 +621,24 @@ final class ModelManager {
 		capabilities[id] = caps
 	}
 
+	/// A new chat was just opened on this model; make its first send cheap.
+	///
+	/// For a vendor model the useful warmth is all client-side — the vendor
+	/// holds no connection and nothing server-side warms ahead of a real send —
+	/// so this re-runs the free key check, which re-validates the key and
+	/// leaves URLSession holding a warm TLS connection while the user types.
+	/// The cached verdict is dropped first: warmth is the point, and a cached
+	/// answer makes no request.
+	///
+	/// Anthropic only, for now: its probe is a free authenticated GET, while
+	/// the OpenAI-compatible backends still verify with a billed inference —
+	/// forcing one of those on every ⌘N would spend tokens on nothing.
+	func prewarm(_ model: GenerativeChatModel) {
+		guard modelBackend[model.id] == .anthropic else { return }
+		probeResults.removeValue(forKey: model.id)
+		Task { await probeConnection(for: model) }
+	}
+
 	func invalidateProbes() {
 		// Bumped first, so anything already on the wire is stamped stale
 		// before it can resume and commit.
@@ -613,7 +715,7 @@ final class ModelManager {
 		to turns: [ChatTurn],
 		using model: GenerativeChatModel,
 		options: ChatOptions = .default
-	) -> AsyncThrowingStream<String, Error> {
+	) -> AsyncThrowingStream<ReplyEvent, Error> {
 		guard let backendID = modelBackend[model.id], let backend = backends[backendID] else {
 			let unknownID = modelBackend[model.id] ?? .none
 			return AsyncThrowingStream { continuation in
@@ -652,8 +754,12 @@ extension ModelManagerError {
 	/// and it's a namespaced key, not a name. Strip the namespace so an alert
 	/// says "claude-opus-5" rather than "vendor.anthropic.claude-opus-5".
 	static func readable(_ id: GenerativeChatModel.ID) -> String {
-		if id.hasPrefix(AnthropicModelEntry.idPrefix) {
-			return String(id.dropFirst(AnthropicModelEntry.idPrefix.count))
+		// Vendor ids are all "vendor.<vendor>.<model>" — Anthropic's and the
+		// OpenAI-dialect family's alike — so strip the two namespace segments
+		// rather than checking each vendor's prefix.
+		if id.hasPrefix("vendor."),
+		   let modelStart = id.dropFirst("vendor.".count).firstIndex(of: ".") {
+			return String(id[id.index(after: modelStart)...])
 		}
 		return id
 	}

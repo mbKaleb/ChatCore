@@ -167,7 +167,7 @@ struct AppleBackend: ChatBackend {
 		to turns: [ChatTurn],
 		model: GenerativeChatModel,
 		options: ChatOptions
-	) -> AsyncThrowingStream<String, Error> {
+	) -> AsyncThrowingStream<ReplyEvent, Error> {
 		AsyncThrowingStream { continuation in
 			let task = Task {
 				do {
@@ -196,7 +196,7 @@ struct AppleBackend: ChatBackend {
 		to turns: [ChatTurn],
 		model: GenerativeChatModel,
 		options: ChatOptions,
-		into continuation: AsyncThrowingStream<String, Error>.Continuation
+		into continuation: AsyncThrowingStream<ReplyEvent, Error>.Continuation
 	) async throws {
 		guard let current = turns.last else { return }
 
@@ -258,12 +258,14 @@ struct AppleBackend: ChatBackend {
 			var yielded = false
 			var answer = ""
 			do {
-				let ended = try await stream(prompt, from: base, model: model, options: options) {
+				let ended = try await stream(
+					prompt, from: base, model: model, options: options, into: continuation
+				) {
 					// An empty snapshot puts nothing on screen, so it doesn't
 					// spend the retry — only visible text does.
 					if !$0.isEmpty { yielded = true }
 					answer = $0
-					continuation.yield($0)
+					continuation.yield(.content($0))
 				}
 				await commit(ended, for: key, answering: turns, with: answer)
 				return
@@ -277,7 +279,9 @@ struct AppleBackend: ChatBackend {
 				// ...but only before anything reached the screen — a retry
 				// after tokens have streamed restarts the answer mid-sentence
 				// in front of the user. The window simply ran out mid-answer,
-				// and saying so beats a framework error.
+				// and saying so beats a framework error. Thinking that
+				// streamed doesn't count: it isn't answer text, and a retry
+				// starts a fresh thinking phase.
 				guard !yielded else { throw ChatBackendError.contextWindowFull }
 
 				attempt += 1
@@ -359,11 +363,15 @@ struct AppleBackend: ChatBackend {
 	}
 
 	/// Runs one prompt and hands back the transcript the session ended with.
+	///
+	/// Answer snapshots go through `onSnapshot` so the caller can track what to
+	/// commit; thinking goes straight into the continuation, being display-only.
 	private func stream(
 		_ prompt: Prompt,
 		from transcript: Transcript,
 		model: GenerativeChatModel,
 		options: ChatOptions,
+		into continuation: AsyncThrowingStream<ReplyEvent, Error>.Continuation,
 		onSnapshot: (String) -> Void
 	) async throws -> Transcript {
 		let session = try makeSession(for: model, transcript: transcript)
@@ -372,6 +380,12 @@ struct AppleBackend: ChatBackend {
 		if !MemoryPressureMonitor.shared.isConstrained {
 			session.prewarm()
 		}
+		// A restored transcript can carry reasoning entries from earlier turns
+		// (Private Cloud reasons too); only entries this turn adds are live.
+		let watcher = ThinkingWatcher.watch(
+			session, skipping: transcript.count, into: continuation
+		)
+		defer { watcher.cancel() }
 		let stream = session.streamResponse(to: prompt, options: options.generationOptions)
 		for try await partial in stream {
 			onSnapshot(partial.content)

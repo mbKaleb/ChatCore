@@ -12,12 +12,31 @@ struct AttachmentChip: View {
 	var onRemove: (() -> Void)?
 
 	private static let contentHeight: CGFloat = 32
+	private static let textContentWidth: CGFloat = 120
+	private static let imageContentWidth: CGFloat = 150
+	private static let chipPadding: CGFloat = 8
+
+	/// What a chip measures once laid out.
+	///
+	/// Both chip bodies commit to a fixed width, so a row of them can be
+	/// measured before it is built — which is what lets the transcript cap the
+	/// row at its natural size instead of letting it overrun a narrow bubble.
+	static func width(for attachment: MessageAttachment) -> CGFloat {
+		(attachment.isImage ? imageContentWidth : textContentWidth) + 2 * chipPadding
+	}
+
+	/// The width a row of `attachments` wants, spacing included.
+	static func rowWidth(for attachments: [MessageAttachment], spacing: CGFloat) -> CGFloat {
+		guard !attachments.isEmpty else { return 0 }
+		return attachments.reduce(0) { $0 + width(for: $1) }
+			+ spacing * CGFloat(attachments.count - 1)
+	}
 
 	var body: some View {
 		Group {
 			if attachment.isImage { imageChip } else { textChip }
 		}
-		.padding(8)
+		.padding(Self.chipPadding)
 		.background(themes.theme.chipBackground)
 		.clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 		.overlay(alignment: .topTrailing) {
@@ -45,7 +64,7 @@ struct AttachmentChip: View {
 				.foregroundStyle(.secondary)
 		}
 		.multilineTextAlignment(.center)
-		.frame(width: 120, height: Self.contentHeight)
+		.frame(width: Self.textContentWidth, height: Self.contentHeight)
 	}
 
 	private var imageChip: some View {
@@ -63,7 +82,7 @@ struct AttachmentChip: View {
 			}
 			Spacer(minLength: 0)
 		}
-		.frame(width: 150, height: Self.contentHeight)
+		.frame(width: Self.imageContentWidth, height: Self.contentHeight)
 	}
 
 	@ViewBuilder

@@ -147,6 +147,16 @@ enum MathCache {
 		context.textMatrix = restoreTextMatrix
 	}
 
+	/// Drop everything.
+	///
+	/// Entries already outlive the blocks that drew them by design, so nothing
+	/// here goes stale on its own — a refresh is the only caller, and the only
+	/// way a mis-typeset equation gets typeset again.
+	static func removeAll() {
+		storage.removeAll()
+		order.removeAll()
+	}
+
 	/// Move `key` to the most-recently-used end.
 	///
 	/// A linear search over at most `capacity` keys, and only on a compile — nothing

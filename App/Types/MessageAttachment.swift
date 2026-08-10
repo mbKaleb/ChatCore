@@ -6,7 +6,9 @@
 import Foundation
 import UniformTypeIdentifiers
 
-struct MessageAttachment: Codable, Identifiable, Hashable {
+/// `nonisolated`: attachments are built wherever their bytes are read — file
+/// imports decode off the main thread — and carry only value storage.
+nonisolated struct MessageAttachment: Codable, Identifiable, Hashable {
 	var id: UUID = UUID()
 	var title: String = "Pasted Text"
 	var text: String = ""

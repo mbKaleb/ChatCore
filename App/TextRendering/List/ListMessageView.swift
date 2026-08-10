@@ -49,9 +49,6 @@ struct ListMessageView: TranscriptRendering {
 	@State private var hasRestoredInitialScrollPosition = false
 	@State private var scrollPosition = ScrollPosition()
 
-	@State private var indicatorOpacity: Double = 0
-	@State private var fadeTask: Task<Void, Never>?
-
 	private static let bottomSpacerID = "ListMessageView.bottomSpacer"
 
 	private let contentLeading: CGFloat = 16
@@ -130,23 +127,6 @@ struct ListMessageView: TranscriptRendering {
 			// scroll bars: Always" the legacy scroller it enforces takes 17pt
 			// out of every row. The capsule overlaid below stands in.
 			.scrollIndicators(.never)
-			.onScrollPhaseChange { _, newPhase in
-				let byGesture = switch newPhase {
-				case .tracking, .interacting, .decelerating: true
-				default: false
-				}
-
-				fadeTask?.cancel()
-				if byGesture {
-					withAnimation(.easeOut(duration: 0.12)) { indicatorOpacity = 1 }
-				} else if indicatorOpacity > 0 {
-					fadeTask = Task {
-						try? await Task.sleep(for: .milliseconds(700))
-						guard !Task.isCancelled else { return }
-						withAnimation(.easeOut(duration: 0.35)) { indicatorOpacity = 0 }
-					}
-				}
-			}
 			.overlay(alignment: .topTrailing) { scrollIndicator }
 
 			.onGeometryChange(
@@ -223,12 +203,11 @@ struct ListMessageView: TranscriptRendering {
 
 	/// The transcript's own scroll indicator, standing in for the system's.
 	///
-	/// It appears only for the gesture-driven scroll phases — tracking,
-	/// interacting, decelerating — so every programmatic placement (opening a
-	/// chat at its saved offset, sticking to the bottom mid-stream, which
-	/// arrives as `.animating`) moves the transcript in silence. Geometry
-	/// falls out of state the view already tracks for its bottom-proximity
-	/// logic; display-only, like an iOS indicator.
+	/// Persistent: on screen whenever there is more transcript than viewport,
+	/// like a legacy scrollbar — but drawn in an overlay, so it never takes
+	/// width from the rows the way the system's legacy scroller would.
+	/// Geometry falls out of state the view already tracks for its
+	/// bottom-proximity logic; display-only.
 	@ViewBuilder
 	private var scrollIndicator: some View {
 		let scrollable = contentHeight - viewportHeight
@@ -243,7 +222,6 @@ struct ListMessageView: TranscriptRendering {
 				.frame(width: 6, height: knobHeight)
 				.offset(y: inset + (track - knobHeight) * progress)
 				.padding(.trailing, 3)
-				.opacity(indicatorOpacity)
 				.allowsHitTesting(false)
 		}
 	}

@@ -124,7 +124,10 @@ nonisolated enum ModelVendor: String, CaseIterable, Identifiable, Codable, Senda
 			return nil
 			#endif
 		default:
-			return nil
+			// Everyone else speaks the OpenAI dialect through the same
+			// Foundation Models seam Claude rides — one backend, profiled
+			// per vendor.
+			return OpenAICompatBackend(vendor: self)
 		}
 	}
 

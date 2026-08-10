@@ -294,10 +294,11 @@ private struct SourceSlicer {
 			let lower = offset(of: range.lowerBound),
 			let upper = offset(of: range.upperBound)
 		else { return nil }
-		// An upper bound past the end is normal mid-stream: the last line of a
+		// Bounds past the end are normal mid-stream: the last line of a
 		// partially received message hasn't arrived in full yet.
-		let end = min(max(lower, upper), bytes.count)
-		return String(decoding: bytes[lower ..< end], as: UTF8.self)
+		let start = min(lower, bytes.count)
+		let end = min(max(start, upper), bytes.count)
+		return String(decoding: bytes[start ..< end], as: UTF8.self)
 	}
 
 	private func offset(of location: SourceLocation) -> Int? {

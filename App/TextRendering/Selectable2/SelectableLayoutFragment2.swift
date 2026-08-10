@@ -16,6 +16,24 @@ nonisolated final class SelectableLayoutFragment2: NSTextLayoutFragment {
 	var kind: BlockKind2 = .paragraph
 	var decoration = FragmentDecoration2()
 
+	/// Identity for the copy button that floats over this card, from `.blockID2`.
+	var blockID: Int?
+	/// The card's code as authored, from `.codeSource2`. Nil on everything that
+	/// isn't a code card.
+	var codeSource: String?
+
+	/// Whether the text view should keep a copy button positioned over this card.
+	///
+	/// The button is a real `NSButton` owned by the text view, not something this
+	/// fragment paints. Painting one and hand-rolling its mouse handling was the
+	/// first attempt, and inside SwiftUI hosting the events never arrived — the
+	/// hosting window doesn't deliver mouse-moved events, and the List's gesture
+	/// plumbing sits between the window and a hand-rolled `mouseDown`. A real
+	/// control gets AppKit's routing, cursor rects and pressed state for free.
+	var hasCopyButton: Bool {
+		kind.isCard && codeSource != nil && decoration.copyButtonSize > 0
+	}
+
 	// MARK: - Reserved space
 
 	// TextKit 2 keeps this space clear around the line fragments, which is where
@@ -125,6 +143,26 @@ nonisolated final class SelectableLayoutFragment2: NSTextLayoutFragment {
 		default:
 			return nil
 		}
+	}
+
+	// MARK: - Copy button
+
+	/// Where the text view should place this card's copy button, in
+	/// text-container coordinates.
+	///
+	/// The rect from `decorationRect()` is fragment-local, and a fragment's local
+	/// origin is its `layoutFragmentFrame` origin — the same point
+	/// `draw(at:in:)` is handed.
+	func copyButtonFrame() -> CGRect? {
+		guard hasCopyButton, let card = decorationRect() else { return nil }
+		let size = decoration.copyButtonSize
+		return CGRect(
+			x: card.maxX - decoration.copyButtonInset - size,
+			y: card.minY + decoration.copyButtonInset,
+			width: size,
+			height: size
+		)
+		.offsetBy(dx: layoutFragmentFrame.minX, dy: layoutFragmentFrame.minY)
 	}
 
 	// MARK: - Inline code pills

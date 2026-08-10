@@ -165,7 +165,9 @@ struct MarkdownAttributedBuilder2 {
 			after: 0,
 			lineSpacing: 2
 		)
-		paragraph.tailIndent = -style.cardPadding.right
+		// The copy button is painted inside the card's top-trailing corner, so the
+		// text has to stop short of it or a long first line reads through it.
+		paragraph.tailIndent = -(style.cardPadding.right + style.copyButtonGutter)
 		paragraph.lineBreakMode = .byCharWrapping
 
 		// U+2028 keeps the whole fence inside ONE NSTextParagraph, so it lays out as
@@ -175,10 +177,13 @@ struct MarkdownAttributedBuilder2 {
 			.trimmingCharacters(in: .newlines)
 			.replacingOccurrences(of: "\n", with: "\u{2028}")
 
-		let body = NSAttributedString(string: text, attributes: [
+		let body = NSMutableAttributedString(string: text, attributes: [
 			.font: style.codeFont,
 			.foregroundColor: style.codeText,
 			.paragraphStyle: paragraph,
+			// What the copy button puts on the pasteboard: the laid-out text has
+			// U+2028 in place of its newlines, and the markdown source has the fence.
+			.codeSource2: code.code.trimmingCharacters(in: .newlines),
 		])
 		push(body, kind: .codeBlock(language: code.language), source: code, into: out, blockID: &blockID)
 	}

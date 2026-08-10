@@ -42,6 +42,11 @@ extension Selectable2Style {
 		codeCardFill = NSColor(t.codeCardBackground)
 		codeCardStroke = NSColor(t.codeCardBorder)
 		inlineCodeFill = NSColor(t.inlineCodeBackground)
+		copyButtonFill = NSColor(t.codeCardCopyBackground)
+		// The theme has one copy-button token, so the hover state is that colour
+		// with more of it rather than a second token nobody would keep in sync.
+		copyButtonHoverFill = NSColor(t.codeCardCopyBackground).moreOpaque2(1.9)
+		copyButtonSymbolColor = NSColor(t.bodyText).dimmed2(0.75)
 		quoteRule = NSColor(t.blockquoteRule)
 		ruleColor = NSColor(t.codeCardBorder)
 
@@ -64,6 +69,12 @@ private extension NSColor {
 	/// own space, and a `Color` bridged from SwiftUI can be one of those.
 	func dimmed2(_ alpha: CGFloat) -> NSColor {
 		usingColorSpace(.sRGB)?.withAlphaComponent(alpha) ?? self
+	}
+
+	/// The same colour with its alpha scaled, clamped to opaque.
+	func moreOpaque2(_ factor: CGFloat) -> NSColor {
+		guard let base = usingColorSpace(.sRGB) else { return self }
+		return base.withAlphaComponent(min(1, base.alphaComponent * factor))
 	}
 }
 

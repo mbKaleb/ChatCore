@@ -13,7 +13,7 @@ enum RenderDebug {
 
 	/// Seeds the `transcriptRenderer` default.
 	///
-	/// The compiled transcript is the default path; `-renderer <id>` starts on
+	/// Selectable 2 is the default path; `-renderer <id>` starts on
 	/// another one without going through Settings, which is what you want when
 	/// comparing two of them or when one is the suspect. `-legacyRenderer` is the
 	/// older spelling of `-renderer virtualized`.

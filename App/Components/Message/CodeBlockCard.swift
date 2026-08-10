@@ -64,6 +64,7 @@ struct CodeBlockCard: View {
 				.contentShape(RoundedRectangle(cornerRadius: 6))
 		}
 		.buttonStyle(.plain)
+		.pointerStyle(.link)
 		.help(didCopy ? "Copied" : "Copy code")
 		.disabled(didCopy)
 	}

@@ -89,10 +89,32 @@ struct MessageBubble: View {
 			&& displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 	}
 
+	/// A turn in flight with nothing to show yet — the model is reasoning, or
+	/// the request is still on the wire. Either way the honest state is
+	/// "working", not the zero-height row an empty message normally collapses
+	/// to. The first answer token flips this off and the bubble takes over.
+	private var isAwaitingAnswer: Bool {
+		isAssistant && liveText != nil && isEmpty
+	}
+
+	/// The tail of the reasoning streamed so far, sized for a glance. The tail
+	/// rather than the head: the head goes stale the moment the model moves on,
+	/// while the tail is what it's thinking about now.
+	private var thinkingTail: String? {
+		guard let thinking = manager.liveThinking[message.id], !thinking.isEmpty else {
+			return nil
+		}
+		let tail = thinking.suffix(360)
+		guard tail.count < thinking.count else { return String(tail) }
+		return "…" + tail.drop(while: { !$0.isWhitespace }).trimmingCharacters(in: .whitespaces)
+	}
+
 	var body: some View {
 		let _ = Self.printChanges()
 
-		if isEmpty {
+		if isAwaitingAnswer {
+			thinkingIndicator
+		} else if isEmpty {
 			Color.clear.frame(height: 0)
 		} else {
 			HStack(spacing: 0) {
@@ -118,6 +140,28 @@ struct MessageBubble: View {
 		}
 	}
 
+	/// What an assistant row shows while the model works: a shimmering label,
+	/// with the live tail of its reasoning beneath once there is one. Quiet on
+	/// purpose — no bubble background, secondary colors — so the eventual
+	/// answer, not the wait, is the loudest thing in the transcript.
+	private var thinkingIndicator: some View {
+		HStack(spacing: 0) {
+			VStack(alignment: .leading, spacing: 6) {
+				ThinkingShimmerLabel()
+				if let thinkingTail {
+					Text(thinkingTail)
+						.font(.callout)
+						.foregroundStyle(.tertiary)
+						.lineLimit(6)
+						.frame(maxWidth: 520, alignment: .leading)
+				}
+			}
+			.padding(.horizontal, 4)
+			.padding(.vertical, ChatBubbleMetrics.assistantColumnPadding + 6)
+			Spacer(minLength: ChatBubbleMetrics.trailingGutter)
+		}
+	}
+
 	private var bubble: some View {
 		let t = themes.theme
 		let a = themes.appearance
@@ -126,17 +170,39 @@ struct MessageBubble: View {
 			spacing: ChatBubbleMetrics.attachmentSpacing
 		) {
 			if !message.attachments.isEmpty {
-				HStack(spacing: 8) {
-					ForEach(message.attachments) { attachment in
-						AttachmentChip(attachment: attachment)
-					}
-				}
+				attachmentRow
 			}
 
 			if !displayText.isEmpty {
 				textContainer(t, a)
 			}
 		}
+	}
+
+	/// The chips above a message's text.
+	///
+	/// Chips are fixed-width, so two of them already want more room than a
+	/// bubble has in a narrow pane, and an `HStack` would simply draw past its
+	/// edge. Scrolling is how the rest of the transcript handles content that
+	/// can't wrap — code blocks, tables, the composer's own tray — so the row
+	/// does the same, capped at its natural width so a single chip still lets
+	/// a user bubble hug its text instead of stretching to the full column.
+	private var attachmentRow: some View {
+		ScrollView(.horizontal, showsIndicators: false) {
+			HStack(spacing: ChatBubbleMetrics.attachmentSpacing) {
+				ForEach(message.attachments) { attachment in
+					AttachmentChip(attachment: attachment)
+				}
+			}
+		}
+		.fixedSize(horizontal: false, vertical: true)
+		.frame(
+			maxWidth: AttachmentChip.rowWidth(
+				for: message.attachments,
+				spacing: ChatBubbleMetrics.attachmentSpacing
+			),
+			alignment: isAssistant ? .leading : .trailing
+		)
 	}
 
 	@ViewBuilder
@@ -205,6 +271,7 @@ struct MessageBubble: View {
 				.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
+		.pointerStyle(.link)
 		.help("Copy message")
 		.disabled(didCopy)
 	}
@@ -234,6 +301,42 @@ struct MessageBubble: View {
 		Task {
 			try? await Task.sleep(for: .seconds(1.2))
 			didCopy = false
+		}
+	}
+}
+
+/// "Thinking…" with a highlight sweeping through it.
+///
+/// The sweep is a gradient band masked to the glyphs, driven by a `TimelineView`
+/// the same way `GlowDot` animates — no repeating SwiftUI animation left running
+/// on a row that is about to be torn down when the answer arrives.
+private struct ThinkingShimmerLabel: View {
+
+	private static let text = "Thinking…"
+	private static let font = Font.callout.weight(.medium)
+	private static let sweepPeriod: TimeInterval = 1.8
+
+	var body: some View {
+		TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+			let phase = timeline.date.timeIntervalSinceReferenceDate
+				.truncatingRemainder(dividingBy: Self.sweepPeriod) / Self.sweepPeriod
+
+			Text(Self.text)
+				.font(Self.font)
+				.foregroundStyle(.secondary)
+				.overlay {
+					GeometryReader { geo in
+						let band = geo.size.width * 0.6
+						LinearGradient(
+							colors: [.clear, .primary.opacity(0.85), .clear],
+							startPoint: .leading,
+							endPoint: .trailing
+						)
+						.frame(width: band)
+						.offset(x: (geo.size.width + band) * phase - band)
+					}
+					.mask(Text(Self.text).font(Self.font))
+				}
 		}
 	}
 }

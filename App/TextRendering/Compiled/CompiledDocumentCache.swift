@@ -46,13 +46,23 @@ enum CompiledDocumentCache {
 	/// Least-recently-used first.
 	private static var order: [UUID] = []
 
+	/// Bumped by `removeAll`, and stamped on every controller at birth.
+	///
+	/// Emptying the storage isn't enough on its own: a controller persists its
+	/// document as it is dismantled, which during a refresh happens *after* the
+	/// purge — so the transcript the refresh threw away would be put straight
+	/// back for the replacement to restore. A store from a controller that
+	/// predates the purge has to be refused, not merely deleted.
+	private(set) static var generation = 0
+
 	static func entry(for id: UUID) -> Entry? {
 		guard let hit = storage[id] else { return nil }
 		promote(id)
 		return hit
 	}
 
-	static func store(_ entry: Entry, for id: UUID) {
+	static func store(_ entry: Entry, for id: UUID, generation: Int) {
+		guard generation == self.generation else { return }
 		if storage.updateValue(entry, forKey: id) == nil {
 			order.append(id)
 			evictOverflow()
@@ -69,6 +79,7 @@ enum CompiledDocumentCache {
 	static func removeAll() {
 		storage.removeAll()
 		order.removeAll()
+		generation &+= 1
 	}
 
 	private static func promote(_ id: UUID) {

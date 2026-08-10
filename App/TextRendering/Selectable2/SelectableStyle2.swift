@@ -26,6 +26,10 @@ nonisolated extension NSAttributedString.Key {
 	static let inlineCode2 = NSAttributedString.Key("cc2.inlineCode")
 	static let markdownSource2 = NSAttributedString.Key("cc2.markdownSource")
 	static let blockID2 = NSAttributedString.Key("cc2.blockID")
+	/// A code card's code exactly as authored — what its copy button puts on the
+	/// pasteboard. The rendered text carries U+2028 line separators and
+	/// `markdownSource2` carries the fence, so neither of those can stand in.
+	static let codeSource2 = NSAttributedString.Key("cc2.codeSource")
 }
 
 nonisolated enum BlockKind2: Equatable {
@@ -90,6 +94,23 @@ nonisolated struct Selectable2Style: @unchecked Sendable {
 	var cardPadding: NSEdgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
 	var inlineCodePadding: CGFloat = 3
 	var inlineCodeCornerRadius: CGFloat = 4
+
+	/// Copy button painted in a code card's top-trailing corner.
+	var copyButtonSize: CGFloat = 22
+	/// Distance from the button to the card's top and trailing edges.
+	var copyButtonInset: CGFloat = 8
+	var copyButtonCornerRadius: CGFloat = 6
+	var copyButtonSymbolSize: CGFloat = 11
+	var copyButtonFill: NSColor = NSColor(name: nil) { $0.isDark ? .init(white: 1, alpha: 0.10) : .init(white: 0, alpha: 0.07) }
+	/// Fill while the pointer is over the button itself rather than just the card.
+	var copyButtonHoverFill: NSColor = NSColor(name: nil) { $0.isDark ? .init(white: 1, alpha: 0.18) : .init(white: 0, alpha: 0.12) }
+	var copyButtonSymbolColor: NSColor = .secondaryLabelColor
+
+	/// Width kept clear at the trailing edge of every code line so the button
+	/// never sits on top of code. The button is *painted over* the text rather
+	/// than laid out beside it, so the room has to come out of the line width —
+	/// the same trade `CodeBlockCard` makes with its trailing padding.
+	var copyButtonGutter: CGFloat { copyButtonSize + copyButtonInset }
 	/// Horizontal distance from the quote rule to the quoted text.
 	var quoteIndent: CGFloat = 18
 	/// Indent applied per level of list nesting.
@@ -151,6 +172,14 @@ nonisolated struct FragmentDecoration2 {
 	var inlineCodeCornerRadius: CGFloat = 4
 	var padding: NSEdgeInsets = NSEdgeInsets()
 
+	var copyButtonSize: CGFloat = 0
+	var copyButtonInset: CGFloat = 8
+	var copyButtonCornerRadius: CGFloat = 6
+	var copyButtonSymbolSize: CGFloat = 11
+	var copyButtonFill: NSColor?
+	var copyButtonHoverFill: NSColor?
+	var copyButtonSymbol: NSColor?
+
 	init(style: Selectable2Style) {
 		cardFill = style.codeCardFill
 		cardStroke = style.codeCardStroke
@@ -162,6 +191,13 @@ nonisolated struct FragmentDecoration2 {
 		inlineCodePadding = style.inlineCodePadding
 		inlineCodeCornerRadius = style.inlineCodeCornerRadius
 		padding = style.cardPadding
+		copyButtonSize = style.copyButtonSize
+		copyButtonInset = style.copyButtonInset
+		copyButtonCornerRadius = style.copyButtonCornerRadius
+		copyButtonSymbolSize = style.copyButtonSymbolSize
+		copyButtonFill = style.copyButtonFill
+		copyButtonHoverFill = style.copyButtonHoverFill
+		copyButtonSymbol = style.copyButtonSymbolColor
 	}
 
 	init() {}

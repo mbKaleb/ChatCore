@@ -13,6 +13,28 @@ struct ChatCore: App {
 	@State private var modelManager = ModelManager()
 	@State private var themeManager = ThemeManager()
 
+	init() {
+		// Keep AutoFill from offering verification codes from Mail/Messages in
+		// any text field. The trait lives on the shared field editor, so it has
+		// to be reapplied each time editing begins.
+		NotificationCenter.default.addObserver(
+			forName: NSControl.textDidBeginEditingNotification, object: nil, queue: .main
+		) { note in
+			guard let editor = note.userInfo?["NSFieldEditor"] as? NSTextView else { return }
+			editor.contentType = nil
+			if #available(macOS 14.0, *) {
+				editor.inlinePredictionType = .no
+			}
+			editor.isAutomaticTextCompletionEnabled = false
+		}
+
+		#if DEBUG
+		TabBarProbe.armIfRequested()
+		NewTabProbe.armIfRequested()
+		ZoomProbe.armIfRequested()
+		#endif
+	}
+
 	let sharedModelContainer: ModelContainer = {
 		let schema = Schema([
 			Conversation.self,
@@ -72,19 +94,31 @@ private struct ChatCommands: Commands {
 	@FocusedValue(\.toggleSidebar) private var toggleSidebar
 	@FocusedValue(\.findChat) private var findChat
 	@FocusedValue(\.deleteConversations) private var deleteConversations
+	@FocusedValue(\.refreshView) private var refreshView
 	@Environment(\.openWindow) private var openWindow
 
 	var body: some Commands {
 		CommandGroup(after: .textEditing) {
-			Button("Find Chat") { findChat?() }
+			Button("Find Chat") { findChat?.perform() }
 				.keyboardShortcut("f", modifiers: .command)
 				.disabled(findChat == nil)
 		}
 
 		CommandGroup(replacing: .sidebar) {
-			Button("Toggle Sidebar") { toggleSidebar?() }
+			Button("Toggle Sidebar") { toggleSidebar?.perform() }
 				.keyboardShortcut("b", modifiers: .command)
 				.disabled(toggleSidebar == nil)
+		}
+
+		// Rebuilds the key window's two columns; a reply still streaming lands
+		// in the transcript that replaces the one it started in. See
+		// `AppView.refresh`.
+		CommandGroup(after: .sidebar) {
+			Divider()
+
+			Button("Refresh") { refreshView?.perform() }
+				.keyboardShortcut("r", modifiers: .command)
+				.disabled(refreshView == nil)
 		}
 
 		// The same "Text size" the Appearance pane sets, stepped a point at a
@@ -107,11 +141,19 @@ private struct ChatCommands: Commands {
 		}
 
 		CommandGroup(replacing: .newItem) {
-			Button("New Chat") { newChat?() }
+			Button("New Chat") { newChat?.perform() }
 				.keyboardShortcut("n", modifiers: .command)
 				.disabled(newChat == nil)
 
-			Button("New Window") { openWindow(id: "main") }
+			// Three ways to get a surface, and they differ: ⌘N navigates the
+			// current window, ⌘T opens a native window tab with a new chat in
+			// it, ⌘⇧N opens an empty window that stays out of the tab group.
+			// A tab is an `NSWindow` either way — what separates the last two is
+			// `tabbingMode`, which `TabbingPolicy` sets.
+			Button("New Tab") { NewTabIntent.open() }
+				.keyboardShortcut("t", modifiers: .command)
+
+			Button("New Window") { NewWindowIntent.open(openWindow) }
 				.keyboardShortcut("n", modifiers: [.command, .shift])
 
 			Divider()

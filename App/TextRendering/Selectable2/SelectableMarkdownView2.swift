@@ -19,6 +19,19 @@ final class SelectableTextView2: NSTextView {
 	/// Set by the coordinator so ⌘C can prefer the original markdown.
 	var emitsMarkdownOnCopy = true
 
+	/// Styling for the copy buttons; refreshed by the coordinator alongside the
+	/// fragments' decoration so the two can't drift.
+	var buttonDecoration = FragmentDecoration2()
+
+	/// One real `NSButton` per code card, keyed by `blockID2` and repositioned
+	/// whenever layout runs. Earlier iterations painted the button in the layout
+	/// fragment and re-implemented hover, cursor and click against its geometry —
+	/// none of which survived SwiftUI hosting, where the window withholds
+	/// mouse-moved events and the List's gesture plumbing sits in front of a
+	/// hand-rolled `mouseDown`. A control gets all of that from AppKit directly,
+	/// and floating over the text it leaves the selection story untouched.
+	private var copyButtons: [Int: CodeCopyButton2] = [:]
+
 	override var acceptsFirstResponder: Bool { true }
 
 	/// `NSTextView.textStorage` is nil when the view is driven by TextKit 2, so
@@ -33,6 +46,60 @@ final class SelectableTextView2: NSTextView {
 	// ScrollView, because a non-scrolling NSTextView still claims them.
 	override func scrollWheel(with event: NSEvent) {
 		nextResponder?.scrollWheel(with: event)
+	}
+
+	// MARK: - Copy buttons
+
+	override func layout() {
+		super.layout()
+		syncCopyButtons()
+	}
+
+	// `layout()` only runs when something marks the view as needing it, and a
+	// width change re-wraps every code card.
+	override func setFrameSize(_ newSize: NSSize) {
+		super.setFrameSize(newSize)
+		needsLayout = true
+	}
+
+	/// One pass that makes the subviews match the code cards: create what's
+	/// missing, move what shifted, drop what's gone. Keyed by `blockID2`, which is
+	/// stable across a streaming rebuild for every block before the append point —
+	/// so a card's button (and its mid-flight checkmark) survives retokenizing.
+	func syncCopyButtons() {
+		guard let textLayoutManager else { return }
+		let origin = textContainerOrigin
+		var seen = Set<Int>()
+
+		textLayoutManager.enumerateTextLayoutFragments(from: nil, options: [.ensuresLayout]) { fragment in
+			guard
+				let fragment = fragment as? SelectableLayoutFragment2,
+				let blockID = fragment.blockID,
+				let code = fragment.codeSource,
+				let frame = fragment.copyButtonFrame()?.offsetBy(dx: origin.x, dy: origin.y)
+			else { return true }
+
+			seen.insert(blockID)
+			let button: CodeCopyButton2
+			if let existing = self.copyButtons[blockID] {
+				button = existing
+			} else {
+				button = CodeCopyButton2()
+				self.addSubview(button)
+				self.copyButtons[blockID] = button
+			}
+			button.decoration = self.buttonDecoration
+			button.code = code
+			if button.frame != frame {
+				button.frame = frame
+			}
+			return true
+		}
+
+		for (blockID, button) in copyButtons where !seen.contains(blockID) {
+			button.removeFromSuperview()
+			copyButtons[blockID] = nil
+		}
 	}
 
 	// ⌘C on rendered text normally yields the *rendered* string, with the markdown
@@ -104,6 +171,135 @@ final class SelectableTextView2: NSTextView {
 			out += math.isInline ? "$\(math.latex)$" : "\n```math\n\(math.latex)\n```\n"
 		}
 		return out.replacingOccurrences(of: "\u{2028}", with: "\n")
+	}
+}
+
+// MARK: - Copy button
+
+/// The copy button floating over one code card.
+///
+/// A real control on purpose: hover highlight, pointer cursor, pressed state and
+/// click delivery are all AppKit's problem, which matters inside SwiftUI hosting
+/// where synthesizing them by hand demonstrably fails. The visuals are drawn
+/// flat — capsule fill plus SF symbol — to match what the fragment used to paint.
+final class CodeCopyButton2: NSButton {
+
+	var decoration = FragmentDecoration2()
+	/// The card's code exactly as authored — what a click puts on the pasteboard.
+	var code = ""
+
+	private var isHovered = false
+	private var showsCheckmark = false
+	private var revertTask: Task<Void, Never>?
+	private var hoverArea: NSTrackingArea?
+
+	init() {
+		super.init(frame: .zero)
+		title = ""
+		isBordered = false
+		setButtonType(.momentaryChange)
+		target = self
+		action = #selector(copyCode)
+		toolTip = "Copy code"
+		setAccessibilityLabel("Copy code")
+	}
+
+	@available(*, unavailable)
+	required init?(coder: NSCoder) {
+		fatalError("init(coder:) is not supported")
+	}
+
+	// A click while the window isn't key should copy, not just activate the app
+	// and then need a second click.
+	override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+	// An I-beam here would read as "this is selectable text"; it isn't. The text
+	// view owns the I-beam through its own cursor rects, and this rect — being the
+	// deeper view — wins over it.
+	override func resetCursorRects() {
+		addCursorRect(bounds, cursor: .pointingHand)
+	}
+
+	override func updateTrackingAreas() {
+		super.updateTrackingAreas()
+		if let hoverArea { removeTrackingArea(hoverArea) }
+		let area = NSTrackingArea(
+			rect: .zero,
+			options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+			owner: self
+		)
+		addTrackingArea(area)
+		hoverArea = area
+	}
+
+	override func mouseEntered(with event: NSEvent) {
+		isHovered = true
+		needsDisplay = true
+	}
+
+	override func mouseExited(with event: NSEvent) {
+		isHovered = false
+		needsDisplay = true
+	}
+
+	override func draw(_ dirtyRect: NSRect) {
+		// `isHighlighted` is the momentary press — the immediate "it reacted",
+		// before the checkmark lands.
+		let fill = isHighlighted || isHovered
+			? decoration.copyButtonHoverFill
+			: decoration.copyButtonFill
+		if let fill {
+			fill.setFill()
+			NSBezierPath(
+				roundedRect: bounds,
+				xRadius: decoration.copyButtonCornerRadius,
+				yRadius: decoration.copyButtonCornerRadius
+			).fill()
+		}
+
+		guard let symbol = symbolImage() else { return }
+		let size = symbol.size
+		symbol.draw(
+			in: CGRect(
+				x: bounds.midX - size.width / 2,
+				y: bounds.midY - size.height / 2,
+				width: size.width,
+				height: size.height
+			)
+		)
+	}
+
+	private func symbolImage() -> NSImage? {
+		guard let image = NSImage(
+			systemSymbolName: showsCheckmark ? "checkmark" : "doc.on.doc",
+			accessibilityDescription: showsCheckmark ? "Copied" : "Copy code"
+		) else { return nil }
+
+		var configuration = NSImage.SymbolConfiguration(
+			pointSize: decoration.copyButtonSymbolSize,
+			weight: .medium
+		)
+		if let color = decoration.copyButtonSymbol {
+			configuration = configuration.applying(NSImage.SymbolConfiguration(paletteColors: [color]))
+		}
+		return image.withSymbolConfiguration(configuration)
+	}
+
+	@objc private func copyCode() {
+		let pasteboard = NSPasteboard.general
+		pasteboard.clearContents()
+		pasteboard.setString(code, forType: .string)
+
+		showsCheckmark = true
+		needsDisplay = true
+
+		revertTask?.cancel()
+		revertTask = Task { [weak self] in
+			try? await Task.sleep(for: .seconds(1.2))
+			guard let self, !Task.isCancelled else { return }
+			showsCheckmark = false
+			needsDisplay = true
+		}
 	}
 }
 
@@ -236,6 +432,16 @@ struct SelectableMarkdownView2: NSViewRepresentable {
 			if !clamped.isEmpty {
 				textView.selectedRanges = clamped.map { NSValue(range: $0) }
 			}
+
+			// Every copy button just moved (or appeared). Layout first — the new
+			// content hasn't been laid out yet, and a fragment without line
+			// fragments reports no button frame at all. The work isn't wasted:
+			// `sizeThatFits` needs the same layout a moment later.
+			textView.buttonDecoration = decoration
+			if let layoutManager = textView.textLayoutManager {
+				layoutManager.ensureLayout(for: layoutManager.documentRange)
+			}
+			textView.syncCopyButtons()
 		}
 
 		// Every paragraph gets the custom fragment: block kinds decide what is drawn
@@ -247,10 +453,15 @@ struct SelectableMarkdownView2: NSViewRepresentable {
 		) -> NSTextLayoutFragment {
 			let fragment = SelectableLayoutFragment2(textElement: textElement, range: textElement.elementRange)
 			fragment.decoration = decoration
-			if let paragraph = textElement as? NSTextParagraph,
-			   paragraph.attributedString.length > 0,
-			   let box = paragraph.attributedString.attribute(.blockKind2, at: 0, effectiveRange: nil) as? BlockKindBox2 {
-				fragment.kind = box.kind
+			if let paragraph = textElement as? NSTextParagraph, paragraph.attributedString.length > 0 {
+				// One lookup for all three: fragments are re-vended constantly while
+				// a reply streams in.
+				let attributes = paragraph.attributedString.attributes(at: 0, effectiveRange: nil)
+				if let box = attributes[.blockKind2] as? BlockKindBox2 {
+					fragment.kind = box.kind
+				}
+				fragment.blockID = attributes[.blockID2] as? Int
+				fragment.codeSource = attributes[.codeSource2] as? String
 			}
 			return fragment
 		}

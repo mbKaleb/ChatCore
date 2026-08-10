@@ -197,10 +197,19 @@ nonisolated extension AnthropicModelEntry {
 
 	var namespacedID: GenerativeChatModel.ID { Self.idPrefix + id }
 
+	/// The catalog prefixes every name with the vendor ("Claude Opus 4.5"), which
+	/// is redundant once the models sit under Anthropic's own heading.
+	var shortDisplayName: String {
+		let trimmed = displayName.trimmingCharacters(in: .whitespaces)
+		guard trimmed.hasPrefix("Claude ") else { return trimmed }
+		let stripped = trimmed.dropFirst("Claude ".count).trimmingCharacters(in: .whitespaces)
+		return stripped.isEmpty ? trimmed : stripped
+	}
+
 	var chatModel: GenerativeChatModel {
 		GenerativeChatModel(
 			id: namespacedID,
-			displayName: displayName,
+			displayName: shortDisplayName,
 			icon: .asset("ClaudeIcon"),
 			weights: .closed,
 			dataResidency: .cloud,

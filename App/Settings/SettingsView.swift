@@ -44,6 +44,7 @@ struct SettingsView: View {
 			minHeight: 400, idealHeight: 680, maxHeight: .infinity
 		)
 		.background(SettingsWindowConfigurator())
+		.background { CloseShortcuts() }
 	}
 
 	// MARK: - Sidebar
@@ -108,6 +109,26 @@ struct SettingsView: View {
 		case .rendering:  RenderingPane()
 		case .accounts:   AccountsPane()
 		}
+	}
+}
+
+/// ⌘W and Esc close the settings window. Esc has no menu item at all, and
+/// claiming ⌘W here keeps the window closable whatever the File menu's Close
+/// is doing; shortcuts in the key window's hierarchy are consulted before
+/// menu key equivalents. Same hidden-twin shape as `TextSizeShortcuts` in
+/// `AppView`.
+private struct CloseShortcuts: View {
+
+	var body: some View {
+		ZStack {
+			Button("Close") { NSApp.keyWindow?.performClose(nil) }
+				.keyboardShortcut("w", modifiers: .command)
+
+			Button("Close") { NSApp.keyWindow?.performClose(nil) }
+				.keyboardShortcut(.cancelAction)
+		}
+		.opacity(0)
+		.accessibilityHidden(true)
 	}
 }
 
@@ -479,6 +500,15 @@ private struct VendorAccountSection: View {
 		case .rejected:
 			return Note(
 				text: "\(vendor.displayName) rejected this key — check it was copied in full.",
+				isError: true
+			)
+		case .forbidden(let message):
+			// The key is fine; the account isn't cleared for this. Only the
+			// vendor knows why, so its sentence is the note — retyping advice
+			// here would just be wrong.
+			return Note(
+				text: message.map { "\(vendor.displayName): \($0)" }
+					?? "\(vendor.displayName) accepted this key but won't serve this account yet.",
 				isError: true
 			)
 		case .unreachable:
