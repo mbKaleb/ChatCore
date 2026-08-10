@@ -293,8 +293,15 @@ extension OpenAICompatError: LocalizedError {
 			"Couldn't read the vendor's reply."
 		case .status(let status, let vendor, let message, _):
 			switch status {
-			case 401, 403:
+			case 401:
 				"\(vendor) rejected the API key."
+			// 401 is about the key; 403 is about what the account may do with
+			// it — no credits, no license, a region the endpoint doesn't serve.
+			// Only the vendor knows which, so its own words are shown when it
+			// sent any; blaming the key would send someone to retype a good one.
+			case 403:
+				message.map { "\(vendor): \($0)" }
+					?? "\(vendor) accepted the API key but won't serve this account."
 			case 429:
 				"\(vendor) is rate limiting this key."
 			case 500...599:
