@@ -310,12 +310,9 @@ final class MessageListViewController: NSViewController {
 		self.tableView = table
 		self.column = col
 
-		let scroll = NSScrollView()
-		scroll.hasVerticalScroller = true
+		let scroll = OverlayScrollView()
 		scroll.hasHorizontalScroller = false
-		scroll.autohidesScrollers = true
-		scroll.scrollerStyle = .overlay
-		scroll.verticalScroller?.controlSize = .small
+		LazyScroller.install(on: scroll)
 		scroll.drawsBackground = false
 		scroll.backgroundColor = .clear
 		scroll.automaticallyAdjustsContentInsets = false
