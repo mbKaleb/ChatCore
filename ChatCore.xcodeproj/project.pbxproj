@@ -132,7 +132,7 @@
 			packageReferences = (
 				A0D27C072FE0F576006C2D1C /* XCRemoteSwiftPackageReference "swift-markdown" */,
 				A0D27C0A2FE0FA87006C2D1C /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
-				A0E7E9B03002142E00958C57 /* XCRemoteSwiftPackageReference "ClaudeForFoundationModels" */,
+				A0E7E9B33002142E00958C57 /* XCLocalSwiftPackageReference "Vendor/ClaudeForFoundationModels" */,
 				A0F1A0013010000A00000001 /* XCRemoteSwiftPackageReference "SwiftMath" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -389,6 +389,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		A0E7E9B33002142E00958C57 /* XCLocalSwiftPackageReference "Vendor/ClaudeForFoundationModels" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/ClaudeForFoundationModels;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		A0D27C072FE0F576006C2D1C /* XCRemoteSwiftPackageReference "swift-markdown" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -404,14 +411,6 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 2.4.1;
-			};
-		};
-		A0E7E9B03002142E00958C57 /* XCRemoteSwiftPackageReference "ClaudeForFoundationModels" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/anthropics/ClaudeForFoundationModels.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.1.2;
 			};
 		};
 		A0F1A0013010000A00000001 /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
@@ -437,7 +436,6 @@
 		};
 		A0E7E9B13002142E00958C57 /* ClaudeForFoundationModels */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = A0E7E9B03002142E00958C57 /* XCRemoteSwiftPackageReference "ClaudeForFoundationModels" */;
 			productName = ClaudeForFoundationModels;
 		};
 		A0F1A0023010000A00000002 /* SwiftMath */ = {
