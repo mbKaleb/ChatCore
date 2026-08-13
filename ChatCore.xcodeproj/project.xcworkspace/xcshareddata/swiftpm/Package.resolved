@@ -1,13 +1,13 @@
 {
-  "originHash" : "9299a60f2e3d1e05fed70828e9c27b4182c40dd8b6394287b852512297be024b",
+  "originHash" : "541747b13d176d476e59faffff6b965598a4924563258352b355cbe25d6db1e8",
   "pins" : [
     {
       "identity" : "claudeforfoundationmodels",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/anthropics/ClaudeForFoundationModels.git",
+      "location" : "https://github.com/anthropics/ClaudeForFoundationModels",
       "state" : {
-        "revision" : "f47c8aad2d94773857182f54cd11d41e21266382",
-        "version" : "0.1.2"
+        "revision" : "410f5e4546fa0f9bd8bb926b77257725af81c9f7",
+        "version" : "0.1.4"
       }
     },
     {
