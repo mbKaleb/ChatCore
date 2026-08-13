@@ -194,7 +194,6 @@ struct AppView: View {
 	/// exactly what a refresh is asking not to happen, since the reason to press
 	/// ⌘R is that what's on screen is wrong.
 	private func refresh() {
-		CompiledDocumentCache.removeAll()
 		MarkdownContentCache.removeAll()
 		MathCache.removeAll()
 		refreshToken &+= 1
@@ -548,32 +547,44 @@ private struct ConversationDetail: View {
 	@Environment(AppModel.self) private var model
 	@Environment(\.modelContext) private var modelContext
 
-	/// Read here rather than inside `ChatView`, which takes the renderer it is
-	/// told to use and leaves where that came from to its caller.
-	@AppStorage(Defaults.Key.transcriptRenderer) private var rendererID = TranscriptRenderer.default.rawValue
-
 	@State private var splitDropTargeted = false
+
+	/// Two fifths of the screen: the floor under the primary chat pane, and —
+	/// the window being `.contentMinSize` — under the window itself, plus the
+	/// sidebar's 235pt while it's open. Read once per launch, so a window
+	/// dragged to another display keeps the floor of the screen it started on.
+	private static let chatPaneMinWidth: CGFloat =
+		((NSScreen.main?.frame.width ?? 1280) * 0.4).rounded()
+
+	/// The secondary pane's floor, shared with the outer frame below so the
+	/// window's minimum grows by exactly this much while a split is open.
+	private static let secondaryPaneMinWidth: CGFloat = 320
 
 	var body: some View {
 		let _ = Self.printChanges()
 		HSplitView {
 			primaryPane
-				.frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+				.frame(minWidth: Self.chatPaneMinWidth, maxWidth: .infinity, maxHeight: .infinity)
 				.layoutPriority(1)
 
 			if let secondary = model.secondaryConversation {
-				SecondaryChatPane(
-					conversation: secondary,
-					renderer: TranscriptRenderer(storedID: rendererID)
-				)
-				.frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+				SecondaryChatPane(conversation: secondary)
+				.frame(minWidth: Self.secondaryPaneMinWidth, maxWidth: .infinity, maxHeight: .infinity)
 			}
 		}
 		.frame(maxWidth: .infinity, maxHeight: .infinity)
-		// Matches the pane minimum rather than exceeding it: the window is
-		// `.contentMinSize`, so anything larger here becomes a floor the sidebar
-		// then adds 235pt to. One pane bottoms out at 320, two at 640.
-		.frame(minWidth: 320, minHeight: 360)
+		// The sum of the panes' floors, so this frame — the window being
+		// `.contentMinSize` — never declares less width than the split's
+		// children demand: a floor below theirs lets the window shrink until
+		// the secondary pane clips off the right edge. The secondary's 320pt
+		// only counts while it exists; a single-pane window keeps the smaller
+		// floor rather than pinning a split-sized one the sidebar then adds
+		// 235pt to.
+		.frame(
+			minWidth: Self.chatPaneMinWidth
+				+ (model.secondaryConversation != nil ? Self.secondaryPaneMinWidth : 0),
+			minHeight: 360
+		)
 		// On the whole column rather than a right-edge strip: the payload type
 		// is what routes the drop, not where it lands. Files and text keep
 		// falling through to `ChatView`'s own drop handling — nothing there
@@ -609,10 +620,7 @@ private struct ConversationDetail: View {
 				Text("\(model.selectedIDs.count) conversations selected")
 					.foregroundStyle(.secondary)
 			} else if let conversation = model.selectedConversation {
-				ChatView(
-					conversation: conversation,
-					renderer: TranscriptRenderer(storedID: rendererID)
-				)
+				ChatView(conversation: conversation)
 			} else {
 				Text("Select or start a conversation")
 					.foregroundStyle(.secondary)
@@ -627,10 +635,9 @@ private struct ConversationDetail: View {
 private struct SecondaryChatPane: View {
 	@Environment(AppModel.self) private var model
 	var conversation: Conversation
-	var renderer: TranscriptRenderer
 
 	var body: some View {
-		ChatView(conversation: conversation, renderer: renderer)
+		ChatView(conversation: conversation)
 			.safeAreaInset(edge: .top, spacing: 0) { header }
 	}
 

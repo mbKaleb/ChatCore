@@ -2,13 +2,21 @@
 //  SelectableMessageList2.swift
 //  ChatCore
 //
-//  The `selectable2` transcript renderer.
+//  The `selectable2` transcript renderer: TextKit 2 message bubbles hosted in
+//  the SwiftUI List.
 //
-//  Deliberately thin: it is `ListMessageView` with the assistant text container
-//  swapped for `SelectableMarkdownView2`. Sharing the scroll, sticking and
-//  restore logic is what makes the comparison mean something — anything that
-//  differs between this and the SwiftUI list is the text renderer, not the
-//  scaffolding around it.
+//  The List host is deliberate, and it is the second time we learned why: an
+//  NSTableView-backed List proposes one fixed width to every row and reuses
+//  rows as they scroll in. A ScrollView + VStack instead probes flexible rows
+//  at several candidate widths per layout pass — and for a row whose sizing
+//  is a full TextKit document layout, that probing is the lag, and its
+//  intrinsic-size fallbacks are the phantom gaps. SwiftUI-native rows can
+//  afford those probes; NSTextView rows cannot. Keep the TextKit bubbles in
+//  the List, or move the whole transcript into one text view — nothing in
+//  between has survived contact with a real chat.
+//
+//  Scroll position restore comes with the List host; the bottom spacer is
+//  compose-bar clearance only.
 //
 
 import SwiftUI

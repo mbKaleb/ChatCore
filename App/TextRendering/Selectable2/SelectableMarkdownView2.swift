@@ -355,15 +355,34 @@ struct SelectableMarkdownView2: NSViewRepresentable {
 	// collapsing to zero height or growing without bound. Measuring here, against
 	// the width SwiftUI actually proposes, avoids the intrinsic-size dance.
 	func sizeThatFits(_ proposal: ProposedViewSize, nsView: SelectableTextView2, context: Context) -> CGSize? {
-		guard let width = proposal.width, width > 0, width.isFinite else { return nil }
+		// A nil or zero width is one of SwiftUI's probing passes. Returning nil
+		// there hands sizing to AppKit's stale intrinsic frame — which is where
+		// ghost-height bubbles and phantom bottom gaps come from. Answer with
+		// the last real measurement instead; there is always one by the time
+		// the probe matters, because the definite-width pass comes first.
+		guard let width = proposal.width, width > 0, width.isFinite else {
+			return context.coordinator.measuredSize
+		}
 		guard let layoutManager = nsView.textLayoutManager else { return nil }
+
+		// Full-document layout is too expensive to run once per layout pass per
+		// message; the measurement is a pure function of (content, width), so
+		// cache it on exactly that key.
+		if let cached = context.coordinator.measuredSize,
+		   abs(cached.width - width) < 0.5,
+		   context.coordinator.measuredVersion == context.coordinator.contentVersion {
+			return cached
+		}
 
 		if abs(nsView.frame.width - width) > 0.5 {
 			nsView.setFrameSize(NSSize(width: width, height: nsView.frame.height))
 		}
 		layoutManager.ensureLayout(for: layoutManager.documentRange)
 		let height = layoutManager.usageBoundsForTextContainer.height
-		return CGSize(width: width, height: ceil(height) + nsView.textContainerInset.height * 2)
+		let size = CGSize(width: width, height: ceil(height) + nsView.textContainerInset.height * 2)
+		context.coordinator.measuredSize = size
+		context.coordinator.measuredVersion = context.coordinator.contentVersion
+		return size
 	}
 
 	// MARK: - Coordinator
@@ -374,6 +393,13 @@ struct SelectableMarkdownView2: NSViewRepresentable {
 		var style: Selectable2Style
 		var onOpenURL: ((URL) -> Void)?
 		var contentStorage: NSTextContentStorage?
+
+		/// The `sizeThatFits` cache: the last measured size, and which content
+		/// version it measured. `apply` bumps `contentVersion` on every real
+		/// rebuild, so a stale height can never outlive the text it measured.
+		var measuredSize: CGSize?
+		var measuredVersion = -1
+		private(set) var contentVersion = 0
 
 		private var decoration: FragmentDecoration2
 		private var renderedMarkdown: String?
@@ -402,6 +428,7 @@ struct SelectableMarkdownView2: NSViewRepresentable {
 				|| renderedFontSize != style.bodyFont.pointSize
 				|| renderedMathToken != mathToken
 			else { return }
+			contentVersion += 1
 			self.style = style
 			self.decoration = FragmentDecoration2(style: style)
 			renderedMarkdown = markdown

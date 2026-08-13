@@ -14,8 +14,38 @@
 import AppKit
 import SwiftUI
 
-// `ChatFont.nsFont(size:weight:)` is declared next to the original renderer in
-// App/Selectable/SelectableStyle+ChatCore.swift; one copy serves both.
+extension ChatFont {
+
+	/// The AppKit twin of `font(size:weight:)`. TextKit needs a concrete `NSFont`
+	/// in the attributed string; SwiftUI's `Font` cannot be unwrapped into one.
+	func nsFont(size: Double, weight: NSFont.Weight = .regular) -> NSFont {
+		switch kind {
+		case .system(let design):
+			let base: NSFont = design == .monospaced
+				? .monospacedSystemFont(ofSize: size, weight: weight)
+				: .systemFont(ofSize: size, weight: weight)
+
+			let systemDesign: NSFontDescriptor.SystemDesign? = switch design {
+			case .rounded: .rounded
+			case .serif: .serif
+			default: nil
+			}
+			guard
+				let systemDesign,
+				let descriptor = base.fontDescriptor.withDesign(systemDesign),
+				let font = NSFont(descriptor: descriptor, size: size)
+			else { return base }
+			return font
+
+		case .family(let name):
+			let base = NSFont(name: name, size: size) ?? .systemFont(ofSize: size, weight: weight)
+			guard weight.rawValue >= NSFont.Weight.semibold.rawValue else { return base }
+			let descriptor = base.fontDescriptor
+				.withSymbolicTraits(base.fontDescriptor.symbolicTraits.union(.bold))
+			return NSFont(descriptor: descriptor, size: size) ?? base
+		}
+	}
+}
 
 // MARK: - Style
 

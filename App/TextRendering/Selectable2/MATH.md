@@ -24,7 +24,7 @@ draw pass, no sibling views.
 | [MathAttachment2.swift](MathAttachment2.swift) | A hole in the text: one U+FFFC, exact geometry, no `viewProvider`. Carries the typeset `MathCache.Entry`. |
 | [MarkdownAttributedBuilder2.swift](MarkdownAttributedBuilder2.swift) | Typesets at build time — fenced ` ```math ` and inline `$…$` — and puts the entry on the attachment. |
 | [SelectableLayoutFragment2.swift](SelectableLayoutFragment2.swift) | `drawMath` finds where the line put each attachment and blits the cached display there. |
-| [MathCache.swift](../Compiled/MathCache.swift) | Shared with `compiled`. Gained an `inline` key dimension, a `descent` on `Entry`, and a `nonisolated` `draw`. |
+| [MathCache.swift](../Markdown/MathCache.swift) | Shared with `compiled`. Gained an `inline` key dimension, a `descent` on `Entry`, and a `nonisolated` `draw`. |
 
 The costs, in order: **build time** typesets each equation once (a dictionary hit
 on every rebuild after the first, since `MathCache` is keyed on

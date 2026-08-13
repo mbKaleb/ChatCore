@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A01DA571302A726E00D95B5B /* ClaudeForFoundationModels in Frameworks */ = {isa = PBXBuildFile; productRef = A01DA570302A726E00D95B5B /* ClaudeForFoundationModels */; };
 		A0AAFA953017F6A4003EBD0A /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = A0F1A0023010000A00000002 /* SwiftMath */; };
 		A0D27C092FE0F576006C2D1C /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = A0D27C082FE0F576006C2D1C /* Markdown */; };
 		A0D27C0C2FE0FA87006C2D1C /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = A0D27C0B2FE0FA87006C2D1C /* MarkdownUI */; };
@@ -52,6 +53,7 @@
 				A0D27C092FE0F576006C2D1C /* Markdown in Frameworks */,
 				A0E7E9B23002142E00958C57 /* ClaudeForFoundationModels in Frameworks */,
 				A0D27C0C2FE0FA87006C2D1C /* MarkdownUI in Frameworks */,
+				A01DA571302A726E00D95B5B /* ClaudeForFoundationModels in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -100,6 +102,7 @@
 				A0D27C0B2FE0FA87006C2D1C /* MarkdownUI */,
 				A0E7E9B13002142E00958C57 /* ClaudeForFoundationModels */,
 				A0F1A0023010000A00000002 /* SwiftMath */,
+				A01DA570302A726E00D95B5B /* ClaudeForFoundationModels */,
 			);
 			productName = ChatCore;
 			productReference = A0641AE82FE0B13B00EFD3BE /* ChatCore.app */;
@@ -132,8 +135,8 @@
 			packageReferences = (
 				A0D27C072FE0F576006C2D1C /* XCRemoteSwiftPackageReference "swift-markdown" */,
 				A0D27C0A2FE0FA87006C2D1C /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
-				A0E7E9B03002142E00958C57 /* XCRemoteSwiftPackageReference "ClaudeForFoundationModels" */,
 				A0F1A0013010000A00000001 /* XCRemoteSwiftPackageReference "SwiftMath" */,
+				A01DA56F302A726E00D95B5B /* XCRemoteSwiftPackageReference "ClaudeForFoundationModels" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A0641AE92FE0B13B00EFD3BE /* Products */;
@@ -390,6 +393,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		A01DA56F302A726E00D95B5B /* XCRemoteSwiftPackageReference "ClaudeForFoundationModels" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/anthropics/ClaudeForFoundationModels";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.1.4;
+			};
+		};
 		A0D27C072FE0F576006C2D1C /* XCRemoteSwiftPackageReference "swift-markdown" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/swiftlang/swift-markdown";
@@ -406,14 +417,6 @@
 				minimumVersion = 2.4.1;
 			};
 		};
-		A0E7E9B03002142E00958C57 /* XCRemoteSwiftPackageReference "ClaudeForFoundationModels" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/anthropics/ClaudeForFoundationModels.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.1.2;
-			};
-		};
 		A0F1A0013010000A00000001 /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/mgriebling/SwiftMath.git";
@@ -425,6 +428,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		A01DA570302A726E00D95B5B /* ClaudeForFoundationModels */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A01DA56F302A726E00D95B5B /* XCRemoteSwiftPackageReference "ClaudeForFoundationModels" */;
+			productName = ClaudeForFoundationModels;
+		};
 		A0D27C082FE0F576006C2D1C /* Markdown */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A0D27C072FE0F576006C2D1C /* XCRemoteSwiftPackageReference "swift-markdown" */;
@@ -437,7 +445,6 @@
 		};
 		A0E7E9B13002142E00958C57 /* ClaudeForFoundationModels */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = A0E7E9B03002142E00958C57 /* XCRemoteSwiftPackageReference "ClaudeForFoundationModels" */;
 			productName = ClaudeForFoundationModels;
 		};
 		A0F1A0023010000A00000002 /* SwiftMath */ = {

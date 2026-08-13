@@ -51,6 +51,13 @@ nonisolated final class BlockViewAttachment: NSTextAttachment {
 		return provider
 	}
 
+	/// The height measured for the width last proposed, so repeat layout passes
+	/// stay a comparison. Keyed on width alone — `latex` is fixed per
+	/// attachment. Mutable state on an attachment is the same smell
+	/// `MathAttachment2.scale` documents, with the same excuse: the geometry
+	/// depends on a width unknown until layout, and TextKit's ordering holds.
+	private var measured: (width: CGFloat, height: CGFloat)?
+
 	override func attachmentBounds(
 		for attributes: [NSAttributedString.Key: Any],
 		location: NSTextLocation,
@@ -58,11 +65,35 @@ nonisolated final class BlockViewAttachment: NSTextAttachment {
 		proposedLineFragment: CGRect,
 		position: CGPoint
 	) -> CGRect {
-		// Fixed geometry keeps the prototype predictable. Real content would measure
-		// its hosting view against the proposed width and cache by (content, width).
-		let lines = max(1, latex.components(separatedBy: "\n").count)
 		let width = proposedLineFragment.width > 0 ? proposedLineFragment.width : 320
-		return CGRect(x: 0, y: -6, width: width, height: 26 + CGFloat(lines) * 24)
+
+		if let measured, measured.width == width {
+			return CGRect(x: 0, y: -6, width: width, height: measured.height)
+		}
+
+		// The placeholder is the latex source wrapped in a padded card, so the
+		// reserved box is that text measured at this width plus the card's
+		// vertical padding — no line counting.
+		let bounds = (latex as NSString).boundingRect(
+			with: NSSize(width: width, height: .greatestFiniteMagnitude),
+			options: [.usesLineFragmentOrigin],
+			attributes: [.font: Self.placeholderFont(size: style.codeFont.pointSize + 1)]
+		)
+		let height = ceil(bounds.height) + 2 * AttachmentPlaceholder.verticalPadding
+
+		measured = (width, height)
+		return CGRect(x: 0, y: -6, width: width, height: height)
+	}
+
+	/// The same face the placeholder's `Text` resolves: the system serif,
+	/// italicized. Measuring with a different font than the one drawn is just
+	/// height inference with extra steps.
+	private static func placeholderFont(size: CGFloat) -> NSFont {
+		let descriptor = NSFont.systemFont(ofSize: size).fontDescriptor
+			.withDesign(.serif)?
+			.withSymbolicTraits(.italic)
+		return descriptor.flatMap { NSFont(descriptor: $0, size: size) }
+			?? NSFont.systemFont(ofSize: size)
 	}
 }
 
@@ -95,7 +126,11 @@ nonisolated final class BlockViewProvider: NSTextAttachmentViewProvider {
 /// Stands in for the real `MathBlockView` so the prototype has no dependency on
 /// the app's rendering stack. Swap the body for `MathBlockView(latex:)` to see
 /// actual equations flow through the selection.
-private struct AttachmentPlaceholder: View {
+struct AttachmentPlaceholder: View {
+
+	/// Shared with `attachmentBounds`, which reserves this much above and
+	/// below the measured text — the two must agree or the card clips.
+	static let verticalPadding: CGFloat = 10
 
 	let latex: String
 	let style: SelectableStyle
@@ -106,7 +141,7 @@ private struct AttachmentPlaceholder: View {
 			.italic()
 			.foregroundStyle(Color(style.bodyColor))
 			.frame(maxWidth: .infinity)
-			.padding(.vertical, 10)
+			.padding(.vertical, Self.verticalPadding)
 			.background {
 				RoundedRectangle(cornerRadius: style.cardCornerRadius)
 					.fill(Color(style.codeCardFill))

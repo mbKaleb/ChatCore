@@ -203,8 +203,12 @@ nonisolated struct FragmentDecoration2 {
 	init() {}
 }
 
-// `NSAppearance.isDark` is declared next to the original renderer in
-// App/Selectable/SelectableStyle.swift; one copy serves both.
+nonisolated extension NSAppearance {
+
+	var isDark: Bool {
+		bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+	}
+}
 
 nonisolated extension NSAppearance {
 

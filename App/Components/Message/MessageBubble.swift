@@ -9,7 +9,7 @@ import MarkdownUI
 /// visibly settle onto after they appear, so both sides read them from here.
 enum ChatBubbleMetrics {
 
-	static let assistantHorizontalPadding: CGFloat = 18
+	static let assistantHorizontalPadding: CGFloat = 15
 	static let assistantVerticalPadding: CGFloat = 14
 
 	static let userHorizontalPadding: CGFloat = 15
@@ -42,12 +42,11 @@ enum ChatBubbleMetrics {
 
 /// Which component draws assistant markdown inside a bubble.
 ///
-/// The TextKit 2 paths make selection flow across the whole message; MarkdownUI
-/// is the reference look. `selectable2` is a fork of `selectable` that carries
-/// experiments — currently fast LaTeX — without destabilising it.
+/// `selectable2` — one TextKit 2 container per message — is the app's
+/// renderer; `markdownUI` is the reference look it is judged against. The
+/// other engines this enum once named live in Archive/TextRendering.
 enum AssistantTextEngine {
 	case markdownUI
-	case selectable
 	case selectable2
 }
 
@@ -110,8 +109,6 @@ struct MessageBubble: View {
 	}
 
 	var body: some View {
-		let _ = Self.printChanges()
-
 		if isAwaitingAnswer {
 			thinkingIndicator
 		} else if isEmpty {
@@ -220,18 +217,9 @@ struct MessageBubble: View {
 					lineSpacing: a.lineSpacing,
 					color: t.bodyText
 				)
-			} else if assistantText == .selectable {
-				// Same preprocessing MarkdownContentCache applies, so the two
-				// renderers are being handed identical source.
-				SelectableMarkdownView(
-					markdown: SoftBreakMarkdown.preserveLineBreaks(
-						a.rendersMath ? MathMarkdown.preprocess(displayText) : displayText
-					),
-					style: SelectableStyleCache.resolved(t, a)
-				)
 			} else if assistantText == .selectable2 {
-				// `inlineMath` is the one preprocessing difference from the other
-				// renderers: this is the only one that draws `$…$`.
+				// `inlineMath` is the one preprocessing difference from the
+				// reference path: this engine is the only one that draws `$…$`.
 				SelectableMarkdownView2(
 					markdown: SoftBreakMarkdown.preserveLineBreaks(
 						a.rendersMath
@@ -255,7 +243,7 @@ struct MessageBubble: View {
 		.padding(.vertical, ChatBubbleMetrics.verticalPadding(assistant: isAssistant))
 		.background(isAssistant ? t.assistantBubble : t.userBubble)
 		.foregroundStyle(isAssistant ? t.bodyText : t.userText)
-		.clipShape(RoundedRectangle(cornerRadius: 12))
+		.clipShape(RoundedRectangle(cornerRadius: 20))
 	}
 
 	private var copyButton: some View {

@@ -11,7 +11,6 @@ struct SettingsView: View {
 		case general = "General"
 		case models = "Models"
 		case appearance = "Appearance"
-		case rendering = "Rendering"
 		case accounts = "Accounts"
 
 		var id: String { rawValue }
@@ -21,7 +20,6 @@ struct SettingsView: View {
 			case .general:    "gearshape"
 			case .models:     "cpu"
 			case .appearance: "paintpalette"
-			case .rendering:  "square.text.square"
 			case .accounts:   "person.crop.circle"
 			}
 		}
@@ -106,7 +104,6 @@ struct SettingsView: View {
 		case .general:    GeneralPane()
 		case .models:     ModelsPane()
 		case .appearance: AppearancePane()
-		case .rendering:  RenderingPane()
 		case .accounts:   AccountsPane()
 		}
 	}
@@ -534,6 +531,7 @@ private struct SettingsWindowConfigurator: NSViewRepresentable {
 		let view = NSView()
 		DispatchQueue.main.async {
 			configure(view.window)
+			place(view.window)
 		}
 		return view
 	}
@@ -542,6 +540,23 @@ private struct SettingsWindowConfigurator: NSViewRepresentable {
 		DispatchQueue.main.async {
 			configure(nsView.window)
 		}
+	}
+
+	/// The opening frame: nine tenths of the screen's width, resting just above
+	/// the Dock. The visible frame already stops at the Dock and the menu bar,
+	/// so its bottom edge is the shelf and no Dock geometry is computed here.
+	/// Height is left at whatever SwiftUI opened the window with. Called from
+	/// `makeNSView` only — reopening Settings builds a fresh representable, so
+	/// every open lands here, while updates don't touch a frame the user has
+	/// since dragged somewhere else.
+	private func place(_ window: NSWindow?) {
+		guard let window, let screen = window.screen ?? NSScreen.main else { return }
+		let visible = screen.visibleFrame
+		var frame = window.frame
+		frame.size.width = (visible.width * 0.9).rounded()
+		frame.origin.x = (visible.minX + (visible.width - frame.width) / 2).rounded()
+		frame.origin.y = visible.minY
+		window.setFrame(frame, display: true)
 	}
 
 	private func configure(_ window: NSWindow?) {
