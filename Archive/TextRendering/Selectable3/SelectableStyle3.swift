@@ -1,13 +1,13 @@
 //
-//  Selectable2Style.swift
+//  Selectable3Style.swift
 //  ChatCore
 //
-//  Styling inputs for the `selectable2` renderer.
+//  Styling inputs for the `selectable3` renderer.
 //
-//  A verbatim fork of App/Selectable/SelectableStyle.swift, kept separate so
-//  `selectable2` can change layout and drawing without disturbing the renderer
-//  people are already comparing against. Everything is suffixed `2` because both
-//  forks live in the same module.
+//  A fork of Selectable2's style, kept separate so `selectable3` can grow the
+//  rest of markdown — tables, task lists, images — without disturbing the
+//  renderer people are already comparing against. Everything is suffixed `3`
+//  because all three forks live in the same module.
 //
 
 import AppKit
@@ -15,24 +15,24 @@ import AppKit
 // MARK: - Custom attributes
 
 /// Semantics the compiler writes into the text storage so the *layout* layer can
-/// decorate without re-parsing. `blockKind2` drives which fragment subclass gets
-/// vended; `inlineCode2` drives pill drawing; `markdownSource2` backs copy fidelity.
+/// decorate without re-parsing. `blockKind3` drives which fragment subclass gets
+/// vended; `inlineCode3` drives pill drawing; `markdownSource3` backs copy fidelity.
 // The target builds with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, but TextKit's
 // layout classes are nonisolated — so everything the layout layer touches has to
 // opt out explicitly, or the overrides below cannot match their superclasses.
 nonisolated extension NSAttributedString.Key {
 
-	static let blockKind2 = NSAttributedString.Key("cc2.blockKind")
-	static let inlineCode2 = NSAttributedString.Key("cc2.inlineCode")
-	static let markdownSource2 = NSAttributedString.Key("cc2.markdownSource")
-	static let blockID2 = NSAttributedString.Key("cc2.blockID")
+	static let blockKind3 = NSAttributedString.Key("cc3.blockKind")
+	static let inlineCode3 = NSAttributedString.Key("cc3.inlineCode")
+	static let markdownSource3 = NSAttributedString.Key("cc3.markdownSource")
+	static let blockID3 = NSAttributedString.Key("cc3.blockID")
 	/// A code card's code exactly as authored — what its copy button puts on the
 	/// pasteboard. The rendered text carries U+2028 line separators and
-	/// `markdownSource2` carries the fence, so neither of those can stand in.
-	static let codeSource2 = NSAttributedString.Key("cc2.codeSource")
+	/// `markdownSource3` carries the fence, so neither of those can stand in.
+	static let codeSource3 = NSAttributedString.Key("cc3.codeSource")
 }
 
-nonisolated enum BlockKind2: Equatable {
+nonisolated enum BlockKind3: Equatable {
 
 	case paragraph
 	case heading(level: Int)
@@ -41,6 +41,11 @@ nonisolated enum BlockKind2: Equatable {
 	case listItem(depth: Int)
 	case rule
 	case attachment
+	/// One row of a rendered table. `row` is its index counting the header as 0,
+	/// `rows` the table's total, and `width` the laid-out width of the whole grid
+	/// — every row carries the full geometry because each row is its own layout
+	/// fragment, and the fragment painting a separator can't see its siblings.
+	case tableRow(row: Int, rows: Int, width: CGFloat)
 
 	/// Whether this block wants a drawn card behind it.
 	var isCard: Bool {
@@ -63,7 +68,7 @@ nonisolated enum BlockKind2: Equatable {
 /// `@unchecked Sendable` because `NSFont` and `NSColor` are reference types the
 /// SDK does not mark as `Sendable`, but both are immutable once created and this
 /// struct is only ever read — including from the nonisolated layout layer.
-nonisolated struct Selectable2Style: @unchecked Sendable {
+nonisolated struct Selectable3Style: @unchecked Sendable {
 
 	var bodyFont: NSFont = .systemFont(ofSize: 14)
 	var codeFont: NSFont = .monospacedSystemFont(ofSize: 12.5, weight: .regular)
@@ -133,6 +138,34 @@ nonisolated struct Selectable2Style: @unchecked Sendable {
 	/// Breathing room around a display equation, inside its reserved box.
 	var mathBlockPadding = CGSize(width: 4, height: 8)
 
+	// MARK: Tables
+
+	var tableHeaderFill: NSColor = NSColor(name: nil) { $0.isDark ? .init(white: 1, alpha: 0.055) : .init(white: 0, alpha: 0.04) }
+	var tableRule: NSColor = NSColor(name: nil) { $0.isDark ? .init(white: 1, alpha: 0.12) : .init(white: 0, alpha: 0.10) }
+	/// Horizontal distance between the end of one column's widest cell and the
+	/// start of the next.
+	var tableColumnGap: CGFloat = 26
+	/// Vertical breathing room above and below each row's text; the row rule is
+	/// drawn in the middle of two adjacent rows' padding.
+	var tableRowPadding: CGFloat = 6
+	/// How far the header fill and the rules extend past the cell text on each
+	/// side, so the grid reads as slightly wider than its content.
+	var tableEdgeInset: CGFloat = 8
+	/// A column is as wide as its widest cell up to this; a longer cell overruns
+	/// its stop and that row's later cells land on the next stop past the text.
+	/// Real column wrapping can't happen inside a single paragraph, so the cap
+	/// trades misalignment in pathological rows for alignment in the common case.
+	var tableMaxColumnWidth: CGFloat = 300
+
+	// MARK: Images
+
+	/// Off leaves images as their alt-text placeholder without ever fetching.
+	var rendersImages = true
+	/// A tall image scales down to this; width is capped by the column at layout
+	/// time, the same way a wide equation is.
+	var imageMaxHeight: CGFloat = 320
+	var imageCornerRadius: CGFloat = 8
+
 	func headingSize(_ level: Int) -> CGFloat {
 		let index = max(0, min(5, level - 1))
 		if headingPointSizes.count == 6 { return headingPointSizes[index] }
@@ -153,13 +186,13 @@ nonisolated struct Selectable2Style: @unchecked Sendable {
 
 // MARK: - Drawing config handed to the layout fragment
 
-/// A flat snapshot of everything `SelectableLayoutFragment2` needs at draw time.
+/// A flat snapshot of everything `SelectableLayoutFragment3` needs at draw time.
 ///
 /// The colours stay as `NSColor` rather than `CGColor` on purpose: dynamic system
 /// colours resolve against `NSAppearance.currentDrawingAppearance` when `.cgColor`
 /// is read, so converting lazily inside `draw(at:in:)` makes the decoration follow
 /// light/dark without rebuilding any fragments.
-nonisolated struct FragmentDecoration2 {
+nonisolated struct FragmentDecoration3 {
 
 	var cardFill: NSColor?
 	var cardStroke: NSColor?
@@ -180,7 +213,13 @@ nonisolated struct FragmentDecoration2 {
 	var copyButtonHoverFill: NSColor?
 	var copyButtonSymbol: NSColor?
 
-	init(style: Selectable2Style) {
+	var tableHeaderFill: NSColor?
+	var tableRule: NSColor?
+	var tableRowPadding: CGFloat = 6
+	var tableEdgeInset: CGFloat = 8
+	var imageCornerRadius: CGFloat = 8
+
+	init(style: Selectable3Style) {
 		cardFill = style.codeCardFill
 		cardStroke = style.codeCardStroke
 		cardCornerRadius = style.cardCornerRadius
@@ -198,29 +237,16 @@ nonisolated struct FragmentDecoration2 {
 		copyButtonFill = style.copyButtonFill
 		copyButtonHoverFill = style.copyButtonHoverFill
 		copyButtonSymbol = style.copyButtonSymbolColor
+		tableHeaderFill = style.tableHeaderFill
+		tableRule = style.tableRule
+		tableRowPadding = style.tableRowPadding
+		tableEdgeInset = style.tableEdgeInset
+		imageCornerRadius = style.imageCornerRadius
 	}
 
 	init() {}
 }
 
-nonisolated extension NSAppearance {
-
-	var isDark: Bool {
-		bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-	}
-}
-
-nonisolated extension NSAppearance {
-
-	/// A concrete colour for a possibly-dynamic one, resolved against this
-	/// appearance. Anything that bakes a colour in — a typeset equation, a cache
-	/// key — needs the resolved value rather than the dynamic wrapper, or it keeps
-	/// whatever appearance happened to be current when it was first read.
-	func resolve(_ color: NSColor) -> NSColor {
-		var resolved = color
-		performAsCurrentDrawingAppearance {
-			resolved = color.usingColorSpace(.sRGB) ?? color
-		}
-		return resolved
-	}
-}
+// `NSAppearance.isDark` lives next to the original renderer in
+// App/Selectable/SelectableStyle.swift and `NSAppearance.resolve(_:)` next to
+// Selectable2 in SelectableStyle2.swift; one copy of each serves all forks.

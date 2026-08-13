@@ -9,6 +9,7 @@ import MarkdownUI
 struct AppearancePane: View {
 
 	@Environment(ThemeManager.self) private var themes
+	@Environment(\.colorScheme) private var colorScheme
 
 	var body: some View {
 		@Bindable var themes = themes
@@ -186,7 +187,7 @@ struct AppearancePane: View {
 			.background(t.assistantBubble)
 			.clipShape(RoundedRectangle(cornerRadius: 10))
 			.padding(8)
-			.background(Color.black.opacity(0.85))
+			.background(colorScheme == .dark ? Color.black.opacity(0.85) : Color.white.opacity(0.85))
 			.clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 			.animation(.easeInOut(duration: 0.12), value: a)
 	}
@@ -237,6 +238,8 @@ struct AppearancePane: View {
 
 	private func themeRow(_ selection: Binding<String>) -> some View {
 		Picker("Theme", selection: selection) {
+			Text("System").tag(ChatTheme.systemID)
+			Divider()
 			ForEach(ChatTheme.all) { theme in
 				Text(theme.name).tag(theme.id)
 			}

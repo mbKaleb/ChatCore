@@ -1,12 +1,13 @@
 //
-//  SelectableMarkdownView2.swift
+//  SelectableMarkdownView3.swift
 //  ChatCore
 //
 //  Prototype: rendered markdown inside a single TextKit 2 text container.
 //
 //  One container means one selection domain, which is what buys flowing selection
-//  across headings, paragraphs, lists, quotes and code — plus shift-click, ⌘A,
-//  double/triple-click, autoscroll, Find and Services for free.
+//  across headings, paragraphs, lists, quotes, code — and, in this fork, tables,
+//  task lists and images — plus shift-click, ⌘A, double/triple-click,
+//  autoscroll, Find and Services for free.
 //
 
 import AppKit
@@ -14,23 +15,23 @@ import SwiftUI
 
 // MARK: - Text view
 
-final class SelectableTextView2: NSTextView {
+final class SelectableTextView3: NSTextView {
 
 	/// Set by the coordinator so ⌘C can prefer the original markdown.
 	var emitsMarkdownOnCopy = true
 
 	/// Styling for the copy buttons; refreshed by the coordinator alongside the
 	/// fragments' decoration so the two can't drift.
-	var buttonDecoration = FragmentDecoration2()
+	var buttonDecoration = FragmentDecoration3()
 
-	/// One real `NSButton` per code card, keyed by `blockID2` and repositioned
+	/// One real `NSButton` per code card, keyed by `blockID3` and repositioned
 	/// whenever layout runs. Earlier iterations painted the button in the layout
 	/// fragment and re-implemented hover, cursor and click against its geometry —
 	/// none of which survived SwiftUI hosting, where the window withholds
 	/// mouse-moved events and the List's gesture plumbing sits in front of a
 	/// hand-rolled `mouseDown`. A control gets all of that from AppKit directly,
 	/// and floating over the text it leaves the selection story untouched.
-	private var copyButtons: [Int: CodeCopyButton2] = [:]
+	private var copyButtons: [Int: CodeCopyButton3] = [:]
 
 	override var acceptsFirstResponder: Bool { true }
 
@@ -63,7 +64,7 @@ final class SelectableTextView2: NSTextView {
 	}
 
 	/// One pass that makes the subviews match the code cards: create what's
-	/// missing, move what shifted, drop what's gone. Keyed by `blockID2`, which is
+	/// missing, move what shifted, drop what's gone. Keyed by `blockID3`, which is
 	/// stable across a streaming rebuild for every block before the append point —
 	/// so a card's button (and its mid-flight checkmark) survives retokenizing.
 	func syncCopyButtons() {
@@ -73,18 +74,18 @@ final class SelectableTextView2: NSTextView {
 
 		textLayoutManager.enumerateTextLayoutFragments(from: nil, options: [.ensuresLayout]) { fragment in
 			guard
-				let fragment = fragment as? SelectableLayoutFragment2,
+				let fragment = fragment as? SelectableLayoutFragment3,
 				let blockID = fragment.blockID,
 				let code = fragment.codeSource,
 				let frame = fragment.copyButtonFrame()?.offsetBy(dx: origin.x, dy: origin.y)
 			else { return true }
 
 			seen.insert(blockID)
-			let button: CodeCopyButton2
+			let button: CodeCopyButton3
 			if let existing = self.copyButtons[blockID] {
 				button = existing
 			} else {
-				button = CodeCopyButton2()
+				button = CodeCopyButton3()
 				self.addSubview(button)
 				self.copyButtons[blockID] = button
 			}
@@ -103,7 +104,7 @@ final class SelectableTextView2: NSTextView {
 	}
 
 	// ⌘C on rendered text normally yields the *rendered* string, with the markdown
-	// stripped. The `.markdownSource2` attribute written by the compiler lets a
+	// stripped. The `.markdownSource3` attribute written by the compiler lets a
 	// selection that fully covers a block round-trip back to its source.
 	override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
 		guard emitsMarkdownOnCopy, let storage else {
@@ -127,14 +128,14 @@ final class SelectableTextView2: NSTextView {
 		let whole = NSRange(location: 0, length: storage.length)
 		var out = ""
 
-		storage.enumerateAttribute(.blockID2, in: selection) { value, range, _ in
+		storage.enumerateAttribute(.blockID3, in: selection) { value, range, _ in
 			guard value != nil else {
 				out += plain(storage.attributedSubstring(from: range))
 				return
 			}
 
 			var block = NSRange()
-			_ = storage.attribute(.blockID2, at: range.location, longestEffectiveRange: &block, in: whole)
+			_ = storage.attribute(.blockID3, at: range.location, longestEffectiveRange: &block, in: whole)
 
 			// The block's range includes its terminating newline; a selection that
 			// stops just short of it still counts as covering the whole block.
@@ -143,7 +144,7 @@ final class SelectableTextView2: NSTextView {
 				&& NSIntersectionRange(selection, visible).length >= visible.length
 
 			if covered,
-			   let source = storage.attribute(.markdownSource2, at: range.location, effectiveRange: nil) as? String {
+			   let source = storage.attribute(.markdownSource3, at: range.location, effectiveRange: nil) as? String {
 				out += source + "\n\n"
 			} else {
 				out += plain(storage.attributedSubstring(from: range))
@@ -154,21 +155,25 @@ final class SelectableTextView2: NSTextView {
 
 	/// The rendered text as it should leave the app.
 	///
-	/// Two substitutions: U+2028 keeps multi-line blocks inside one layout
-	/// fragment but should copy as an ordinary newline, and an equation is a
-	/// single U+FFFC that would otherwise paste as a blank box — it copies as its
-	/// LaTeX instead. Whole-block selections don't come through here at all;
-	/// `.markdownSource2` already round-trips those.
+	/// The substitutions: U+2028 keeps multi-line blocks inside one layout
+	/// fragment but should copy as an ordinary newline, and an attachment is a
+	/// single U+FFFC that would otherwise paste as a blank box — an equation
+	/// copies as its LaTeX, an image as `![alt](source)`. Whole-block
+	/// selections don't come through here at all; `.markdownSource3` already
+	/// round-trips those.
 	private func plain(_ attributed: NSAttributedString) -> String {
 		var out = ""
 		let whole = NSRange(location: 0, length: attributed.length)
 
 		attributed.enumerateAttribute(.attachment, in: whole) { value, range, _ in
-			guard let math = value as? MathAttachment2 else {
+			switch value {
+			case let math as MathAttachment3:
+				out += math.isInline ? "$\(math.latex)$" : "\n```math\n\(math.latex)\n```\n"
+			case let image as ImageAttachment3:
+				out += "![\(image.alt)](\(image.source))"
+			default:
 				out += attributed.attributedSubstring(from: range).string
-				return
 			}
-			out += math.isInline ? "$\(math.latex)$" : "\n```math\n\(math.latex)\n```\n"
 		}
 		return out.replacingOccurrences(of: "\u{2028}", with: "\n")
 	}
@@ -182,9 +187,9 @@ final class SelectableTextView2: NSTextView {
 /// click delivery are all AppKit's problem, which matters inside SwiftUI hosting
 /// where synthesizing them by hand demonstrably fails. The visuals are drawn
 /// flat — capsule fill plus SF symbol — to match what the fragment used to paint.
-final class CodeCopyButton2: NSButton {
+final class CodeCopyButton3: NSButton {
 
-	var decoration = FragmentDecoration2()
+	var decoration = FragmentDecoration3()
 	/// The card's code exactly as authored — what a click puts on the pasteboard.
 	var code = ""
 
@@ -305,17 +310,17 @@ final class CodeCopyButton2: NSButton {
 
 // MARK: - SwiftUI wrapper
 
-struct SelectableMarkdownView2: NSViewRepresentable {
+struct SelectableMarkdownView3: NSViewRepresentable {
 
 	let markdown: String
-	var style = Selectable2Style()
+	var style = Selectable3Style()
 	var onOpenURL: ((URL) -> Void)?
 
 	func makeCoordinator() -> Coordinator {
 		Coordinator(style: style, onOpenURL: onOpenURL)
 	}
 
-	func makeNSView(context: Context) -> SelectableTextView2 {
+	func makeNSView(context: Context) -> SelectableTextView3 {
 		let contentStorage = NSTextContentStorage()
 		let layoutManager = NSTextLayoutManager()
 		let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
@@ -325,7 +330,7 @@ struct SelectableMarkdownView2: NSViewRepresentable {
 		contentStorage.addTextLayoutManager(layoutManager)
 		layoutManager.delegate = context.coordinator
 
-		let textView = SelectableTextView2(frame: .zero, textContainer: container)
+		let textView = SelectableTextView3(frame: .zero, textContainer: container)
 		textView.isEditable = false
 		textView.isSelectable = true
 		textView.drawsBackground = false
@@ -346,7 +351,7 @@ struct SelectableMarkdownView2: NSViewRepresentable {
 		return textView
 	}
 
-	func updateNSView(_ nsView: SelectableTextView2, context: Context) {
+	func updateNSView(_ nsView: SelectableTextView3, context: Context) {
 		context.coordinator.onOpenURL = onOpenURL
 		context.coordinator.apply(markdown: markdown, style: style, to: nsView)
 	}
@@ -354,7 +359,7 @@ struct SelectableMarkdownView2: NSViewRepresentable {
 	// The single most common failure mode for a text view inside SwiftUI is
 	// collapsing to zero height or growing without bound. Measuring here, against
 	// the width SwiftUI actually proposes, avoids the intrinsic-size dance.
-	func sizeThatFits(_ proposal: ProposedViewSize, nsView: SelectableTextView2, context: Context) -> CGSize? {
+	func sizeThatFits(_ proposal: ProposedViewSize, nsView: SelectableTextView3, context: Context) -> CGSize? {
 		// A nil or zero width is one of SwiftUI's probing passes. Returning nil
 		// there hands sizing to AppKit's stale intrinsic frame — which is where
 		// ghost-height bubbles and phantom bottom gaps come from. Answer with
@@ -390,7 +395,7 @@ struct SelectableMarkdownView2: NSViewRepresentable {
 	@MainActor
 	final class Coordinator: NSObject, NSTextLayoutManagerDelegate, NSTextViewDelegate {
 
-		var style: Selectable2Style
+		var style: Selectable3Style
 		var onOpenURL: ((URL) -> Void)?
 		var contentStorage: NSTextContentStorage?
 
@@ -401,20 +406,56 @@ struct SelectableMarkdownView2: NSViewRepresentable {
 		var measuredVersion = -1
 		private(set) var contentVersion = 0
 
-		private var decoration: FragmentDecoration2
+		private var decoration: FragmentDecoration3
 		private var renderedMarkdown: String?
 		private var renderedFontSize: CGFloat?
 		/// Math is typeset against a resolved colour, so a light/dark switch has to
 		/// rebuild the string even when nothing else about it changed.
 		private var renderedMathToken: String?
+		/// Which images had arrived when the string was built. A bitmap landing
+		/// after the fact bumps the store's version, so the guard reopens and the
+		/// placeholder alt text becomes the image.
+		private var renderedImagesVersion: Int?
 
-		init(style: Selectable2Style, onOpenURL: ((URL) -> Void)?) {
+		/// What a mid-stream image arrival needs to rebuild without waiting for
+		/// SwiftUI to call `updateNSView` — a message that has finished streaming
+		/// never gets another update on its own.
+		private weak var appliedTextView: SelectableTextView3?
+		private var appliedMarkdown: String?
+
+		init(style: Selectable3Style, onOpenURL: ((URL) -> Void)?) {
 			self.style = style
 			self.onOpenURL = onOpenURL
-			self.decoration = FragmentDecoration2(style: style)
+			self.decoration = FragmentDecoration3(style: style)
+			super.init()
+			// Selector-based on purpose: the block API hands the closure a
+			// non-Sendable Notification across an isolation boundary, which
+			// strict concurrency rejects, and its token demands a deinit the
+			// selector form hasn't needed since 10.11.
+			NotificationCenter.default.addObserver(
+				self,
+				selector: #selector(imageDidLoad(_:)),
+				name: ImageStore3.imageDidLoad3,
+				object: nil
+			)
 		}
 
-		func apply(markdown: String, style: Selectable2Style, to textView: SelectableTextView2) {
+		/// Posted from the store's MainActor task, so delivery is on the main
+		/// thread this coordinator lives on.
+		@objc private func imageDidLoad(_ note: Notification) {
+			guard
+				let source = note.object as? String,
+				let markdown = appliedMarkdown,
+				markdown.contains(source),
+				let textView = appliedTextView
+			else { return }
+			apply(markdown: markdown, style: style, to: textView)
+			// The rebuild changed the laid-out height; SwiftUI re-runs
+			// `sizeThatFits` off the invalidation.
+			textView.invalidateIntrinsicContentSize()
+		}
+
+		func apply(markdown: String, style: Selectable3Style, to textView: SelectableTextView3) {
 			var style = style
 			// SwiftMath bakes the colour into the typeset display, so a dynamic
 			// `NSColor` would be resolved at typeset time against whatever appearance
@@ -423,20 +464,26 @@ struct SelectableMarkdownView2: NSViewRepresentable {
 			// resolved value part of the cache key instead.
 			style.mathColor = textView.effectiveAppearance.resolve(style.mathColor)
 			let mathToken = "\(style.equationFontSize)|\(style.mathColor)|\(style.rendersMath)"
+			let imagesVersion = ImageStore3.version
+
+			appliedTextView = textView
+			appliedMarkdown = markdown
 
 			guard renderedMarkdown != markdown
 				|| renderedFontSize != style.bodyFont.pointSize
 				|| renderedMathToken != mathToken
+				|| renderedImagesVersion != imagesVersion
 			else { return }
 			contentVersion += 1
 			self.style = style
-			self.decoration = FragmentDecoration2(style: style)
+			self.decoration = FragmentDecoration3(style: style)
 			renderedMarkdown = markdown
 			renderedFontSize = style.bodyFont.pointSize
 			renderedMathToken = mathToken
+			renderedImagesVersion = imagesVersion
 
 			guard let contentStorage else { return }
-			var builder = MarkdownAttributedBuilder2(style: style)
+			var builder = MarkdownAttributedBuilder3(style: style)
 			let built = builder.build(markdown)
 
 			// Streaming appends land after any existing selection, so restoring it
@@ -478,17 +525,17 @@ struct SelectableMarkdownView2: NSViewRepresentable {
 			textLayoutFragmentFor location: NSTextLocation,
 			in textElement: NSTextElement
 		) -> NSTextLayoutFragment {
-			let fragment = SelectableLayoutFragment2(textElement: textElement, range: textElement.elementRange)
+			let fragment = SelectableLayoutFragment3(textElement: textElement, range: textElement.elementRange)
 			fragment.decoration = decoration
 			if let paragraph = textElement as? NSTextParagraph, paragraph.attributedString.length > 0 {
 				// One lookup for all three: fragments are re-vended constantly while
 				// a reply streams in.
 				let attributes = paragraph.attributedString.attributes(at: 0, effectiveRange: nil)
-				if let box = attributes[.blockKind2] as? BlockKindBox2 {
+				if let box = attributes[.blockKind3] as? BlockKindBox3 {
 					fragment.kind = box.kind
 				}
-				fragment.blockID = attributes[.blockID2] as? Int
-				fragment.codeSource = attributes[.codeSource2] as? String
+				fragment.blockID = attributes[.blockID3] as? Int
+				fragment.codeSource = attributes[.codeSource3] as? String
 			}
 			return fragment
 		}

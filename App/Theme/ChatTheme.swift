@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import AppKit
 import Observation
 
 struct ChatTheme: Identifiable, Equatable {
@@ -30,6 +31,51 @@ struct ChatTheme: Identifiable, Equatable {
 }
 
 extension ChatTheme {
+
+	/// The pseudo-selection that means "follow the OS appearance". It resolves
+	/// to `systemLight` or `systemDark` at read time, so it never appears in
+	/// `all` — it isn't a sheet, it's a rule for picking one.
+	static let systemID = "system"
+
+	static let systemDark = ChatTheme(
+		id: "system-dark",
+		name: "System Dark",
+		userBubble: .blue,
+		userText: .white,
+		assistantBubble: .white.opacity(0.06),
+		chipBackground: .white.opacity(0.12),
+		bodyText: .white.opacity(0.92),
+		strongText: .white,
+		emphasisText: .white.opacity(0.9),
+		headingText: .white,
+		linkText: .blue,
+		blockquoteRule: .blue,
+		inlineCodeText: .white,
+		inlineCodeBackground: .white.opacity(0.06),
+		codeCardBackground: Color(red: 0.12, green: 0.13, blue: 0.16),
+		codeCardBorder: .white.opacity(0.06),
+		codeCardCopyBackground: .white.opacity(0.10)
+	)
+
+	static let systemLight = ChatTheme(
+		id: "system-light",
+		name: "System Light",
+		userBubble: .blue,
+		userText: .white,
+		assistantBubble: .black.opacity(0.05),
+		chipBackground: .black.opacity(0.08),
+		bodyText: .black.opacity(0.85),
+		strongText: .black,
+		emphasisText: .black.opacity(0.82),
+		headingText: .black,
+		linkText: .blue,
+		blockquoteRule: .blue,
+		inlineCodeText: .black,
+		inlineCodeBackground: .black.opacity(0.06),
+		codeCardBackground: Color(red: 0.955, green: 0.955, blue: 0.965),
+		codeCardBorder: .black.opacity(0.08),
+		codeCardCopyBackground: .black.opacity(0.07)
+	)
 
 	static let midnight = ChatTheme(
 		id: "midnight",
@@ -71,7 +117,7 @@ extension ChatTheme {
 		codeCardCopyBackground: .white.opacity(0.12)
 	)
 
-	static let all: [ChatTheme] = [.midnight, .graphite]
+	static let all: [ChatTheme] = [.systemDark, .systemLight, .midnight, .graphite]
 }
 
 struct ChatAppearance: Equatable {
@@ -137,6 +183,14 @@ final class ThemeManager {
 	var selectedID: String {
 		didSet { persist(selectedID, forKey: Defaults.Key.selectedThemeID) }
 	}
+
+	/// What the OS appearance currently resolves to. Tracked here (rather than
+	/// read from `\.colorScheme` at each call site) so `theme` stays a plain
+	/// property every consumer already uses; observation makes views that read
+	/// `theme` re-render when the system flips.
+	private(set) var systemScheme: ColorScheme
+
+	@ObservationIgnored private var appearanceObservation: NSKeyValueObservation? = nil
 
 	@ObservationIgnored private var isRestoringDefaults = false
 
@@ -241,7 +295,10 @@ final class ThemeManager {
 		let defaults = UserDefaults.standard
 
 		let stored = defaults.string(forKey: Defaults.Key.selectedThemeID)
-		selectedID = ChatTheme.all.contains { $0.id == stored } ? stored! : ChatTheme.midnight.id
+		let isValid = stored == ChatTheme.systemID || ChatTheme.all.contains { $0.id == stored }
+		selectedID = isValid ? stored! : ChatTheme.systemID
+
+		systemScheme = Self.scheme(of: NSApplication.shared.effectiveAppearance)
 
 		storedFontSize = defaults.double(forKey: Defaults.Key.fontSize)
 			.clamped(to: ChatAppearance.fontSizeRange)
@@ -262,10 +319,23 @@ final class ThemeManager {
 		headingFontID = defaults.string(forKey: Defaults.Key.headingFontID) ?? ChatFont.system.id
 		codeFontID = defaults.string(forKey: Defaults.Key.codeFontID) ?? ChatFont.systemMono.id
 		tableFontID = defaults.string(forKey: Defaults.Key.tableFontID) ?? ChatFont.system.id
+
+		appearanceObservation = NSApplication.shared.observe(\.effectiveAppearance) { [weak self] app, _ in
+			let scheme = Self.scheme(of: app.effectiveAppearance)
+			Task { @MainActor in self?.systemScheme = scheme }
+		}
+	}
+
+	private nonisolated static func scheme(of appearance: NSAppearance) -> ColorScheme {
+		appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .dark : .light
 	}
 
 	var theme: ChatTheme {
-		ChatTheme.all.first { $0.id == selectedID } ?? .midnight
+		if selectedID == ChatTheme.systemID {
+			return systemScheme == .light ? .systemLight : .systemDark
+		}
+		return ChatTheme.all.first { $0.id == selectedID }
+			?? (systemScheme == .light ? .systemLight : .systemDark)
 	}
 
 	var appearance: ChatAppearance {
@@ -293,7 +363,7 @@ final class ThemeManager {
 
 		isRestoringDefaults = true
 		defer { isRestoringDefaults = false }
-		selectedID = defaults.string(forKey: Defaults.Key.selectedThemeID) ?? ChatTheme.midnight.id
+		selectedID = defaults.string(forKey: Defaults.Key.selectedThemeID) ?? ChatTheme.systemID
 		storedFontSize = defaults.double(forKey: Defaults.Key.fontSize)
 		storedLineSpacing = defaults.double(forKey: Defaults.Key.lineSpacing)
 		storedHeadingScale = defaults.double(forKey: Defaults.Key.headingScale)

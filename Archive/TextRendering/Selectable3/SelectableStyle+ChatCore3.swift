@@ -1,9 +1,9 @@
 //
-//  Selectable2Style+ChatCore.swift
+//  Selectable3Style+ChatCore.swift
 //  ChatCore
 //
 //  Bridges the app's theme and appearance settings into the standalone
-//  `Selectable2Style`.
+//  `Selectable3Style`.
 //
 //  The component itself stays ignorant of `ChatTheme`/`ChatAppearance` so it can
 //  be evaluated and previewed on its own; this file is the only place the two
@@ -14,42 +14,12 @@
 import AppKit
 import SwiftUI
 
-extension ChatFont {
-
-	/// The AppKit twin of `font(size:weight:)`. TextKit needs a concrete `NSFont`
-	/// in the attributed string; SwiftUI's `Font` cannot be unwrapped into one.
-	func nsFont(size: Double, weight: NSFont.Weight = .regular) -> NSFont {
-		switch kind {
-		case .system(let design):
-			let base: NSFont = design == .monospaced
-				? .monospacedSystemFont(ofSize: size, weight: weight)
-				: .systemFont(ofSize: size, weight: weight)
-
-			let systemDesign: NSFontDescriptor.SystemDesign? = switch design {
-			case .rounded: .rounded
-			case .serif: .serif
-			default: nil
-			}
-			guard
-				let systemDesign,
-				let descriptor = base.fontDescriptor.withDesign(systemDesign),
-				let font = NSFont(descriptor: descriptor, size: size)
-			else { return base }
-			return font
-
-		case .family(let name):
-			let base = NSFont(name: name, size: size) ?? .systemFont(ofSize: size, weight: weight)
-			guard weight.rawValue >= NSFont.Weight.semibold.rawValue else { return base }
-			let descriptor = base.fontDescriptor
-				.withSymbolicTraits(base.fontDescriptor.symbolicTraits.union(.bold))
-			return NSFont(descriptor: descriptor, size: size) ?? base
-		}
-	}
-}
+// `ChatFont.nsFont(size:weight:)` is declared next to the original renderer in
+// App/Selectable/SelectableStyle+ChatCore.swift; one copy serves both.
 
 // MARK: - Style
 
-extension Selectable2Style {
+extension Selectable3Style {
 
 	init(theme t: ChatTheme, appearance a: ChatAppearance) {
 		self.init()
@@ -65,7 +35,7 @@ extension Selectable2Style {
 		strongColor = NSColor(t.strongText)
 		emphasisColor = NSColor(t.emphasisText)
 		headingColor = NSColor(t.headingText)
-		secondaryColor = NSColor(t.bodyText).dimmed2(0.55)
+		secondaryColor = NSColor(t.bodyText).dimmed3(0.55)
 		linkColor = NSColor(t.linkText)
 
 		codeText = NSColor(t.inlineCodeText)
@@ -75,10 +45,14 @@ extension Selectable2Style {
 		copyButtonFill = NSColor(t.codeCardCopyBackground)
 		// The theme has one copy-button token, so the hover state is that colour
 		// with more of it rather than a second token nobody would keep in sync.
-		copyButtonHoverFill = NSColor(t.codeCardCopyBackground).moreOpaque2(1.9)
-		copyButtonSymbolColor = NSColor(t.bodyText).dimmed2(0.75)
+		copyButtonHoverFill = NSColor(t.codeCardCopyBackground).moreOpaque3(1.9)
+		copyButtonSymbolColor = NSColor(t.bodyText).dimmed3(0.75)
 		quoteRule = NSColor(t.blockquoteRule)
 		ruleColor = NSColor(t.codeCardBorder)
+		// The theme has no table vocabulary yet, so the grid borrows the code
+		// card's: its fill for the header band, its border for the rules.
+		tableHeaderFill = NSColor(t.codeCardBackground)
+		tableRule = NSColor(t.codeCardBorder)
 
 		lineSpacing = CGFloat(a.lineSpacing)
 		blockGap = CGFloat(ChatMarkdownMetrics.blockGap + a.lineSpacing)
@@ -97,12 +71,12 @@ private extension NSColor {
 
 	/// `withAlphaComponent` traps on colours that have no alpha channel in their
 	/// own space, and a `Color` bridged from SwiftUI can be one of those.
-	func dimmed2(_ alpha: CGFloat) -> NSColor {
+	func dimmed3(_ alpha: CGFloat) -> NSColor {
 		usingColorSpace(.sRGB)?.withAlphaComponent(alpha) ?? self
 	}
 
 	/// The same colour with its alpha scaled, clamped to opaque.
-	func moreOpaque2(_ factor: CGFloat) -> NSColor {
+	func moreOpaque3(_ factor: CGFloat) -> NSColor {
 		guard let base = usingColorSpace(.sRGB) else { return self }
 		return base.withAlphaComponent(min(1, base.alphaComponent * factor))
 	}
@@ -116,13 +90,13 @@ private extension NSColor {
 /// which re-evaluates constantly as rows scroll, and building a style resolves
 /// four fonts and fourteen colours.
 @MainActor
-enum Selectable2StyleCache {
+enum Selectable3StyleCache {
 
-	private static var cached: (theme: ChatTheme, appearance: ChatAppearance, value: Selectable2Style)?
+	private static var cached: (theme: ChatTheme, appearance: ChatAppearance, value: Selectable3Style)?
 
-	static func resolved(_ t: ChatTheme, _ a: ChatAppearance) -> Selectable2Style {
+	static func resolved(_ t: ChatTheme, _ a: ChatAppearance) -> Selectable3Style {
 		if let cached, cached.theme == t, cached.appearance == a { return cached.value }
-		let value = Selectable2Style(theme: t, appearance: a)
+		let value = Selectable3Style(theme: t, appearance: a)
 		cached = (t, a, value)
 		return value
 	}

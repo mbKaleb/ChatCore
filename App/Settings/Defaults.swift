@@ -24,13 +24,6 @@ enum Defaults {
 		static let stripedTables = "appearanceStripedTables"
 		static let streamingMode = "streamingMode"
 
-		/// Which transcript renderer draws the chat, as a `TranscriptRenderer` id.
-		static let transcriptRenderer = "transcriptRenderer"
-
-		/// The Bool `transcriptRenderer` replaced, back when the choice was
-		/// compiled-or-not. Read once at launch by `migrateRendererChoice`.
-		fileprivate static let compiledRenderer = "compiledRenderer"
-
 		/// One switch per vendor in the Models pane.
 		nonisolated static func vendorEnabled(_ vendor: ModelVendor) -> String {
 			"vendorEnabled.\(vendor.rawValue)"
@@ -77,11 +70,9 @@ enum Defaults {
 		]
 	}
 
-	static let defaultThemeID = ChatTheme.midnight.id
+	static let defaultThemeID = ChatTheme.systemID
 
 	static let registered: Void = {
-		migrateRendererChoice()
-
 		var vendorDefaults: [String: Any] = [:]
 		for vendor in ModelVendor.allCases {
 			vendorDefaults[Key.vendorEnabled(vendor)] = vendor.isEnabledByDefault
@@ -104,22 +95,6 @@ enum Defaults {
 			Key.tableFontSize: ChatAppearance.default.tableFontSize,
 			Key.stripedTables: ChatAppearance.default.stripedTables,
 			Key.streamingMode: StreamingMode.token.rawValue,
-			Key.transcriptRenderer: RenderDebug.defaultRenderer.rawValue,
 		])
 	}()
-
-	/// Carry a renderer someone actually chose over to the id-based key.
-	///
-	/// `compiledRenderer` was a Bool — on meant the compiled path, off meant the
-	/// virtualized one. Only a value that was written counts: an unset Bool reads
-	/// as `false`, and turning the compiled renderer off is exactly what somebody
-	/// who never opened Settings did not do.
-	private static func migrateRendererChoice() {
-		let store = UserDefaults.standard
-		guard store.object(forKey: Key.compiledRenderer) != nil else { return }
-		defer { store.removeObject(forKey: Key.compiledRenderer) }
-		guard store.object(forKey: Key.transcriptRenderer) == nil else { return }
-		let renderer: TranscriptRenderer = store.bool(forKey: Key.compiledRenderer) ? .compiled : .virtualized
-		store.set(renderer.rawValue, forKey: Key.transcriptRenderer)
-	}
 }

@@ -13,9 +13,6 @@ struct ChatView: View {
 	/// value only this one reacts to.
 	@Environment(AppModel.self) private var app
 	@Bindable var conversation: Conversation
-	/// How the transcript is drawn. Passed in rather than read from settings
-	/// here, so this view has no opinion about which renderers exist.
-	var renderer: TranscriptRenderer
 	@State private var composer = ComposerState()
 	@State private var showFileImporter = false
 	@State private var isDropTargeted = false
@@ -72,7 +69,7 @@ struct ChatView: View {
 	var body: some View {
 		let _ = Self.printChanges()
 		ZStack(alignment: .bottom) {
-			renderer.transcript(
+			SelectableMessageList2(
 				TranscriptContext(
 					conversationID: conversation.id,
 					messages: sortedMessages,
@@ -624,7 +621,6 @@ private struct BackendWatermark: View {
 #Preview {
 	struct PreviewContainer: View {
 		@State private var app = AppModel()
-		@State private var renderer = TranscriptRenderer.default
 
 		private let conversation: Conversation = {
 			var config = Chat.default
@@ -633,27 +629,10 @@ private struct BackendWatermark: View {
 		}()
 
 		var body: some View {
-			ChatView(
-				conversation: conversation,
-				renderer: renderer
-			)
-			.environment(app)
-			.environment(ModelManager())
-			.environment(ThemeManager())
-			// Its own control rather than the stored preference: the preview is
-			// where two renderers get held against each other, and switching
-			// here doesn't disturb what the running app is set to.
-			.overlay(alignment: .topTrailing) {
-				Picker("Renderer", selection: $renderer) {
-					ForEach(TranscriptRenderer.allCases) { renderer in
-						Text(renderer.displayName).tag(renderer)
-					}
-				}
-				.pickerStyle(.menu)
-				.labelsHidden()
-				.fixedSize()
-				.padding(8)
-			}
+			ChatView(conversation: conversation)
+				.environment(app)
+				.environment(ModelManager())
+				.environment(ThemeManager())
 		}
 	}
 

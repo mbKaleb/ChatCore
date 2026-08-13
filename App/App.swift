@@ -12,29 +12,7 @@ import SwiftData
 struct ChatCore: App {
 	@State private var modelManager = ModelManager()
 	@State private var themeManager = ThemeManager()
-
-	init() {
-		// Keep AutoFill from offering verification codes from Mail/Messages in
-		// any text field. The trait lives on the shared field editor, so it has
-		// to be reapplied each time editing begins.
-		NotificationCenter.default.addObserver(
-			forName: NSControl.textDidBeginEditingNotification, object: nil, queue: .main
-		) { note in
-			guard let editor = note.userInfo?["NSFieldEditor"] as? NSTextView else { return }
-			editor.contentType = nil
-			if #available(macOS 14.0, *) {
-				editor.inlinePredictionType = .no
-			}
-			editor.isAutomaticTextCompletionEnabled = false
-		}
-
-		#if DEBUG
-		TabBarProbe.armIfRequested()
-		NewTabProbe.armIfRequested()
-		ZoomProbe.armIfRequested()
-		#endif
-	}
-
+	
 	let sharedModelContainer: ModelContainer = {
 		let schema = Schema([
 			Conversation.self,

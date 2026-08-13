@@ -15,8 +15,10 @@ struct ListMessageView: TranscriptRendering {
 	var bottomInset: CGFloat = 0
 
 	/// Which text container draws assistant markdown. The scroll machinery is
-	/// identical whichever is picked, which is the point — it keeps the
-	/// `selectable` renderers honest A/Bs against this one.
+	/// identical whichever is picked, so a text container can be A/B'd inside
+	/// this List without changing the scaffolding around it. `selectable2`
+	/// rides this List on purpose — its NSTextView rows need the one fixed
+	/// row width and the row reuse only an NSTableView-backed host gives.
 	var assistantText: AssistantTextEngine = .markdownUI
 
 	/// `conversationID` goes unused: the rows are ordinary SwiftUI views with
@@ -36,13 +38,9 @@ struct ListMessageView: TranscriptRendering {
 	@State private var viewportHeight: CGFloat = 0
 	@State private var viewportWidth: CGFloat = 0
 
-	@State private var lastMessageHeight: CGFloat = 0
-	@State private var lastUserMessageHeight: CGFloat = 0
-
 	@State private var isNearBottom = true
 
 	private let bottomProximityThreshold: CGFloat = 80
-	private let lineHeight: CGFloat = 20
 
 	@State private var currentDistanceFromBottom: CGFloat = 0
 	@State private var contentHeight: CGFloat = 0
@@ -53,23 +51,6 @@ struct ListMessageView: TranscriptRendering {
 
 	private let contentLeading: CGFloat = 16
 	private let contentTrailing: CGFloat = 26
-
-	/// The empty row under the last message.
-	///
-	/// Two jobs: keep the last message clear of the compose bar floating over the
-	/// transcript, and leave the newest exchange enough room beneath it to sit at
-	/// the top of the viewport rather than pinned to the bottom of it.
-	private var bottomSpacerHeight: CGFloat {
-		let userHeight = messages.last?.role == "assistant"
-			? lastUserMessageHeight
-			: 0
-
-		let remainingLines =
-			((viewportHeight - bottomInset - lastMessageHeight - userHeight) / lineHeight)
-				.rounded(.down) - 1
-
-		return bottomInset + max(0, remainingLines * lineHeight)
-	}
 
 	var body: some View {
 		let _ = Self.printChanges()
@@ -89,28 +70,17 @@ struct ListMessageView: TranscriptRendering {
 						)
 						.background(ThinScrollerConfigurator())
 						.id(message.id)
-						.onGeometryChange(
-							for: CGFloat.self,
-							of: { $0.size.height }
-						) { _, newHeight in
-							if message.role == "user" {
-								lastUserMessageHeight = newHeight
-							}
-
-							guard message.id == messages.last?.id else {
-								return
-							}
-
-							lastMessageHeight = newHeight
-						}
 				}
 				.listRowSeparator(.hidden)
 
 				// The row every scroll-to-bottom aims at. Scrolling to the last
 				// message instead would put it under the compose bar, which is
-				// what this row is holding space for.
+				// what this row is holding space for. Exactly the compose-bar
+				// clearance — this used to also reserve a viewport of blank
+				// space to park the newest exchange at the top, and that
+				// rendered as a giant void under the last message.
 				Color.clear
-					.frame(height: bottomSpacerHeight)
+					.frame(height: bottomInset)
 					.listRowBackground(Color.clear)
 					.listRowInsets(EdgeInsets())
 					.listRowSeparator(.hidden)
