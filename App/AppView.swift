@@ -127,10 +127,12 @@ struct AppView: View {
 		@Bindable var model = model
 		NavigationSplitView(columnVisibility: $model.columnVisibility) {
 			ConversationSidebar(onNewConversation: newConversation)
+				.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
 				.id(refreshToken)
 		} detail: {
 			ConversationDetail()
 				.scrollEdgeEffectHidden(true, for: .top)
+				.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
 				.id(refreshToken)
 		}
 		.task {
