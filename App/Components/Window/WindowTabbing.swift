@@ -92,23 +92,19 @@ struct TabbingPolicy: NSViewRepresentable {
 	}
 }
 
-/// Takes the chrome out from behind the native tab bar, and hides its "+".
+/// Hides the tab bar's "+" and widens its track to the full bar.
 ///
 /// The tab bar is a bottom titlebar accessory — it already sits *under* the
-/// toolbar rather than inside it, in a plain `NSView` of its own. What made it
-/// read as part of the toolbar is the `NSSubduedGlassEffectView` behind it: a
-/// full-width tinted track drawn under the tabs. It can't simply be hidden —
-/// the tabs are *inside* it, so that would take them along. It holds three
-/// subviews — a backdrop, the one carrying the tab strip, and an overlay — and
-/// only the middle one has children of its own, which is what tells them apart.
+/// toolbar rather than inside it, in a plain `NSView` of its own. Apple styles
+/// its `NSSubduedGlassEffectView` track to match `NSTitlebarView`'s own
+/// material on purpose, so the tab row reads as a continuation of the toolbar
+/// above it rather than a separate surface — that backdrop is left alone here;
+/// only the "+" button and the track's width are touched.
 ///
 /// `NSTitlebarView`'s own opaque material stays: `titlebarAppearsTransparent`
 /// is left false (and forced back down if something flips it), so the toolbar
-/// keeps its background and the transcript doesn't show through it.
-///
-/// The selected tab's own `NSGlassEffectView` is left alone. It's a separate
-/// view from the track, and once the track is gone it's the only thing marking
-/// which tab is active.
+/// keeps its background, the transcript doesn't show through it, and it goes
+/// on matching the untouched tab-bar backdrop below.
 ///
 /// AppKit shows the "+" whenever something in the responder chain answers
 /// `newWindowForTab:` — which SwiftUI's `WindowGroup` always does — and there
@@ -180,16 +176,15 @@ struct TabBarChrome: NSViewRepresentable {
 			#if DEBUG
 			Self.updateCount += 1
 			#endif
-			// The titlebar keeps its own opaque material — only the tab bar's
-			// own track comes out below.
+			// The titlebar keeps its own opaque material, matching the tab
+			// bar's own (untouched) backdrop below it.
 			if window.titlebarAppearsTransparent {
 				window.titlebarAppearsTransparent = false
 			}
 
-			// Re-assert rather than return: AppKit flips these back when the tab
-			// bar relays out, and doing it from the stored references costs no
-			// search — which is also what retries a `hideBackdrops` that came too
-			// early to apply.
+			// Re-assert rather than return: AppKit flips `hiddenButton.isHidden`
+			// back when the tab bar relays out, and doing it from the stored
+			// references costs no search.
 			//
 			// Only ever *change* things, though. Hiding an already-hidden view
 			// still invalidates it, and this runs on `didUpdateNotification`,
@@ -201,7 +196,6 @@ struct TabBarChrome: NSViewRepresentable {
 				hiddenButton.isHidden = true
 			}
 			if let track, track.window === window {
-				hideBackdrops(of: track)
 				stretchTrack(of: track)
 				// Both in hand: nothing a fresh search could add.
 				if hiddenButton?.window === window { return }
@@ -245,7 +239,6 @@ struct TabBarChrome: NSViewRepresentable {
 			}
 			hiddenButton?.isHidden = true
 			if let track {
-				hideBackdrops(of: track)
 				stretchTrack(of: track)
 			}
 		}
@@ -326,19 +319,6 @@ struct TabBarChrome: NSViewRepresentable {
 			let horizontal: Set<NSLayoutConstraint.Attribute> = [.leading, .trailing, .left, .right, .width]
 			return horizontal.contains(constraint.firstAttribute)
 				|| horizontal.contains(constraint.secondAttribute)
-		}
-
-		/// Hides the childless siblings flanking the tab strip.
-		///
-		/// The guard is the safety catch: before the accessory has laid out,
-		/// *nothing* has children yet, and hiding on that frame would blank the
-		/// tab bar. Leaving the stock chrome up for a frame is the better miss.
-		private func hideBackdrops(of track: NSView) {
-			let layers = track.subviews
-			guard layers.contains(where: { !$0.subviews.isEmpty }) else { return }
-			for layer in layers where layer.subviews.isEmpty && !layer.isHidden {
-				layer.isHidden = true
-			}
 		}
 
 		private static func trackGlass(in view: NSView) -> NSView? {
